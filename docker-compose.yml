@@ -1,0 +1,27 @@
+services:
+  eufy-ws:
+    image: bropat/eufy-security-ws:latest
+    container_name: eufy-ws
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - USERNAME=${EUFY_USERNAME}
+      - PASSWORD=${EUFY_PASSWORD}
+      - COUNTRY=${EUFY_COUNTRY}
+
+  eufy-to-n8n:
+    image: node:20-alpine
+    container_name: eufy-to-n8n
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./bridge:/app
+    command: sh -c "npm ci && node index.js"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - EUFY_WS_URL=ws://eufy-ws:3000
+      - API_SCHEMA=21
+      - DOORBELL_SN=${DOORBELL_SN}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
