@@ -4,13 +4,17 @@ import axios from "axios";
 const EUFY_WS_URL = process.env.EUFY_WS_URL ?? "ws://localhost:3000";
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
 const DOORBELL_SN = process.env.DOORBELL_SN; // strongly recommended
+const HOMEBASE_SN = process.env.HOMEBASE_SN;
 const API_SCHEMA = Number(process.env.API_SCHEMA ?? "21");
+const THROTTLE_SECONDS = Number(process.env.THROTTLE_SECONDS ?? "10");
 
 if (!N8N_WEBHOOK_URL) throw new Error("Missing N8N_WEBHOOK_URL");
 if (!DOORBELL_SN) console.warn("⚠️ DOORBELL_SN not set; you may forward too many events.");
+if (!HOMEBASE_SN) console.warn("⚠️ HOMEBASE_SN not set; some station events may be ignored.");
 
 let nextId = 1;
 const pending = new Map(); // messageId -> { resolve, reject, timeout }
+const lastSent = new Map(); // serial -> timestamp
 
 function send(ws, command, payload = {}) {
   const messageId = String(nextId++);
@@ -35,22 +39,10 @@ function request(ws, command, payload = {}, timeoutMs = 15000) {
 }
 
 function extractSerial(evt) {
-  return evt?.serialNumber ?? evt?.data?.serialNumber ?? evt?.device?.serialNumber;
+  return evt?.serialNumber ?? evt?.event?.serialNumber ?? evt?.data?.serialNumber ?? evt?.device?.serialNumber;
 }
 
-function looksLikeDoorbellEvent(evt) {
-  // This is intentionally “broad” because event shapes vary by schema/device.
-  // We’ll still filter by DOORBELL_SN.
-  const s = JSON.stringify(evt).toLowerCase();
-  return (
-    s.includes("doorbell") ||
-    s.includes("ring") ||
-    s.includes("motion") ||
-    s.includes("person") ||
-    s.includes("package") ||
-    s.includes("push")
-  );
-}
+
 
 function bufferFromEufyPicture(pic) {
   // Common shapes seen:
@@ -77,8 +69,11 @@ async function fetchSnapshot(ws, serialNumber) {
   for (const a of attempts) {
     try {
       const resp = await request(ws, a.command, a.payload);
+      const safeLog = JSON.stringify(resp, (k, v) => (k === "picture" ? "<redacted_buffer>" : v), 2);
+      console.log(`✅ Snapshot fetch succeeded for command ${a.command}:`, safeLog);
       return resp;
     } catch (e) {
+      console.warn(`⚠️ Snapshot fetch attempt failed for command ${a.command}:`, e);
       lastErr = e;
     }
   }
@@ -88,38 +83,47 @@ async function fetchSnapshot(ws, serialNumber) {
 
 const ws = new WebSocket(EUFY_WS_URL);
 
-ws.on("open", () => {
+ws.on("open", async () => {
   console.log("✅ Connected:", EUFY_WS_URL);
 
   // Init sequence: set schema + connect + listen.
-  // Schema mismatches can cause schema_incompatible. :contentReference[oaicite:5]{index=5}
-  send(ws, "set_api_schema", { schemaVersion: API_SCHEMA });
-  send(ws, "driver.connect");
-  send(ws, "start_listening");
+  try {
+    const schemaResp = await request(ws, "set_api_schema", { schemaVersion: API_SCHEMA });
+    console.log(`✅ Schema version set to ${API_SCHEMA}. Server response:`, JSON.stringify(schemaResp));
 
-  // Try to fetch driver history events
-  (async () => {
-    try {
-      console.log("📜 Fetching driver history events...");
-      const now = Date.now();
-      const past = now - (7 * 24 * 60 * 60 * 1000); // 7 days ago
+    console.log("🔌 Connecting driver...");
+    const connectResp = await request(ws, "driver.connect");
+    console.log("✅ Driver connection response:", JSON.stringify(connectResp));
 
-      const resp = await request(ws, "driver.get_history_events", {
-        startTimestampMs: past,
-        endTimestampMs: now,
-        maxResults: 50
-      });
-      console.log("📜 History result:", JSON.stringify(resp, null, 2));
-    } catch (err) {
-      console.error("❌ Driver history query failed:", err.message);
+    send(ws, "start_listening");
+
+    const targets = [
+        { sn: DOORBELL_SN, type: "device" },
+        { sn: HOMEBASE_SN, type: "station" }
+    ];
+
+    for (const { sn, type } of targets) {
+        if (!sn) continue;
+        console.log(`🔍 Fetching supported commands for ${sn} (${type})...`);
+        
+        try {
+            const cmds = await request(ws, `${type}.get_commands`, { serialNumber: sn });
+            console.log(`📜 Supported ${type.toUpperCase()} commands for ${sn}:`, JSON.stringify(cmds, null, 2));
+        } catch (e) {
+             console.warn(`⚠️ Could not fetch ${type} commands for ${sn}:`, e.message);
+        }
     }
-  })();
+  } catch (e) {
+    console.error("❌ Failed during initialization sequence:", e);
+  }
 });
 
 ws.on("message", async (raw) => {
   let msg;
   try {
     msg = JSON.parse(raw.toString());
+    if (msg.type === "result") return;
+    console.log("📨 Received message:", JSON.stringify(msg, null, 2));
   } catch {
     return;
   }
@@ -133,13 +137,37 @@ ws.on("message", async (raw) => {
     return;
   }
 
-  // Otherwise treat as event
-  if (msg.type === "result") return;
+  
+
+  if (msg.type === "event" && msg.event?.event === "captcha request") {
+      console.log("=============== CAPTCHA REQUESTED ===============");
+      console.log("Captcha ID:", msg.event.captchaId);
+      console.log("Captcha Content:");
+      console.log(msg.event.captcha);
+      console.log("=================================================");
+      return;
+  }
   
   const serial = extractSerial(msg);
-  if (DOORBELL_SN && serial && serial !== DOORBELL_SN) return;
-  if (!looksLikeDoorbellEvent(msg)) return;
 
+  // Filter out events that don't match our target doorbell
+  if (DOORBELL_SN && serial && serial !== DOORBELL_SN) {
+      console.log(`Ignoring event for ${serial} (expected ${DOORBELL_SN})`);
+      return;
+  }
+
+  const now = Date.now();
+  const throttleKey = serial || "unknown";
+  const lastTime = lastSent.get(throttleKey) || 0;
+  const throttleMs = THROTTLE_SECONDS * 1000;
+
+  if (now - lastTime < throttleMs) {
+    console.log(`⏳ Throttling event for ${throttleKey} (too soon)`);
+    return;
+  }
+
+  lastSent.set(throttleKey, now);
+  console.log(JSON.stringify(msg, null, 2));
   console.log("📸 Fetching snapshot for sensitive event:", msg.command || "unknown", "serial:", serial);
   try {
     const propsResp = await fetchSnapshot(ws, DOORBELL_SN ?? serial);
@@ -195,3 +223,4 @@ ws.on("error", (err) => {
   console.error("WS error:", err);
   process.exit(1);
 });
+

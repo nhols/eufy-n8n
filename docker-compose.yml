@@ -17,11 +17,48 @@ services:
     working_dir: /app
     volumes:
       - ./bridge:/app
-    command: sh -c "npm ci && node index.js"
+      - ./local_files:/app/local_files
+    command: sh -c "npm ci && node listen_events.js"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       - EUFY_WS_URL=ws://eufy-ws:3000
       - API_SCHEMA=21
+      - THROTTLE_SECONDS=10
       - DOORBELL_SN=${DOORBELL_SN}
+      - HOMEBASE_SN=${HOMEBASE_SN}
       - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - SUBDOMAIN=${SUBDOMAIN}
+      - DOMAIN_NAME=${DOMAIN_NAME}
+    volumes:
+      - caddy_data:/data
+      - ${DATA_FOLDER}/caddy_config:/config
+      - ${DATA_FOLDER}/caddy_config/Caddyfile:/etc/caddy/Caddyfile
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ${DATA_FOLDER}/local_files:/files
+
+volumes:
+  caddy_data:
+  n8n_data:
