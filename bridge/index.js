@@ -200,7 +200,7 @@ ws.on("message", async (raw) => {
         receivedAt: new Date().toISOString(),
         doorbellSerialNumber: DOORBELL_SN ?? serial,
         eufyEvent: msg,
-        snapshot: {
+        data: {
           mimeType: "image/jpeg",
           base64: snapshotBase64
         }

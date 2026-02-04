@@ -54,7 +54,7 @@ services:
     volumes:
       - ./bridge:/app
       - ./local_files:/app/local_files
-    command: sh -c "npm ci && node test.js"
+    command: sh -c "apk add --no-cache ffmpeg && npm ci && node test.js"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
