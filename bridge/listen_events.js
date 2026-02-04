@@ -5,6 +5,7 @@ import path from "path";
 const EUFY_WS_URL = process.env.EUFY_WS_URL ?? "ws://localhost:3000";
 const API_SCHEMA = Number(process.env.API_SCHEMA ?? "21");
 const DOORBELL_SN = process.env.DOORBELL_SN;
+const PATIO_SN = process.env.PATIO_SN ?? "T84A1P102335072D";
 const HOMEBASE_SN = process.env.HOMEBASE_SN;
 const IMAGE_DIR = process.env.IMAGE_DIR ?? "/app/local_files";
 const IMAGE_PREFIX = process.env.IMAGE_PREFIX ?? "event-image";
@@ -207,6 +208,7 @@ ws.on("open", async () => {
 
     const targets = [
       { sn: DOORBELL_SN, type: "device" },
+      { sn: PATIO_SN, type: "device" },
       { sn: HOMEBASE_SN, type: "station" }
     ];
 
@@ -240,6 +242,20 @@ ws.on("open", async () => {
 
                 const countStart = new Date(startMs);
                 const countEnd = new Date(endMs);
+                const queryByDatePayload = {
+                  serialNumber: HOMEBASE_SN,
+                  startDate: countStart,
+                  endDate: countEnd
+                };
+
+                log("Query station.database_query_by_date payload:", JSON.stringify(queryByDatePayload));
+                const queryByDateResp = await request(
+                  ws,
+                  "station.database_query_by_date",
+                  queryByDatePayload,
+                  60000
+                );
+                log("Station Database Query By Date:", JSON.stringify(queryByDateResp, null, 2));
                 const countAttempts = [
                   {
                     label: "Date objects",
