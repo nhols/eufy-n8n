@@ -5,9 +5,11 @@ import axios from "axios";
 
 const EUFY_WS_URL = process.env.EUFY_WS_URL ?? "ws://localhost:3000";
 const HOMEBASE_SN = process.env.HOMEBASE_SN;
+const DOORBELL_SN = process.env.DOORBELL_SN;
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
 
 if (!HOMEBASE_SN) throw new Error("Missing HOMEBASE_SN");
+if (!DOORBELL_SN) throw new Error("Missing DOORBELL_SN");
 if (!N8N_WEBHOOK_URL) throw new Error("Missing N8N_WEBHOOK_URL");
 
 const ws = new WebSocket(EUFY_WS_URL);
@@ -19,70 +21,103 @@ const log = (...args) => console.log(`[${ts()}]`, ...args);
 
 let videoChunks = [];
 let outputPath = '/app/local_files/';
-let downloadComplete = false;
-const downloadedVideos = new Set(); // Track already downloaded videos
+const sentEvents = new Set(); // Track events already sent to n8n
+let connectTimeout = null;
+
+const queryRecentVideos = () => {
+    const t = new Date(), n = new Date(t); n.setDate(n.getDate()+1);
+    log(`Querying station ${HOMEBASE_SN} for videos`);
+    const queryParams = {
+        serialNumber: HOMEBASE_SN, 
+        serialNumbers: [], 
+        startDate: fmt(t), 
+        endDate: fmt(n), 
+        eventType: 0, 
+        detectionType: 0, 
+        storageType: 0
+    };
+    log('📤 database_query_by_date params:', JSON.stringify(queryParams, null, 2));
+    send('station.database_query_by_date', queryParams);
+};
 
 ws.on('open', () => {
-log('Connected!');
-send('set_api_schema', {schemaVersion:21});
-send('start_listening');
+    log('Connected!');
+    send('set_api_schema', {schemaVersion:21});
+    send('start_listening');
+    send('driver.connect');
+    
+    // Set 10 minute timeout for driver.connect response
+    connectTimeout = setTimeout(() => {
+        log('⏱️  10 minute timeout reached, querying videos...');
+        queryRecentVideos();
+    }, 10 * 60 * 1000);
 });
 
 ws.on('message', async (d) => {
 const m = JSON.parse(d);
-log('<<< type:', m.type, 'event:', m.event?.event ?? (m.result?.state ? 'state' : ''));
-
-if (downloadComplete) return;
-
-if (m.result?.state?.stations) {
-    log('Stations:', m.result.state.stations);
-    // Only query the specified HOMEBASE_SN station
-    if (m.result.state.stations.includes(HOMEBASE_SN)) {
-        const t = new Date(), n = new Date(t); n.setDate(n.getDate()+1);
-        log(`Querying station ${HOMEBASE_SN} for videos`);
-        send('station.database_query_by_date', {
-            serialNumber: HOMEBASE_SN, 
-            serialNumbers: [], 
-            startDate: fmt(t), 
-            endDate: fmt(n), 
-            eventType: 0, 
-            detectionType: 0, 
-            storageType: 0
-        });
-    } else {
-        console.warn(`⚠️ Station ${HOMEBASE_SN} not found in state`);
-        ws.close(); 
-        process.exit(1);
+const eventName = m.event?.event ?? (m.result?.state ? 'state' : '');
+if (eventName !== 'download audio data' && eventName !== 'download video data') {
+    // Only log if no serialNumber, or if serialNumber matches our devices
+    if (!m.event?.serialNumber || m.event.serialNumber === DOORBELL_SN || m.event.serialNumber === HOMEBASE_SN) {
+        log(m);
     }
+}
+
+// Handle driver.connect response
+if (m.type === 'result' && m.success === true && connectTimeout) {
+    log('✅ Driver connected, clearing timeout and querying videos...');
+    clearTimeout(connectTimeout);
+    connectTimeout = null;
+    queryRecentVideos();
+}
+
+// Handle motion detected event
+if (m.event?.event === 'motion detected' && 
+    m.event?.serialNumber === DOORBELL_SN && 
+    m.event?.state === false) {
+    log('🚨 Motion detected event (state=false), querying videos...');
+    queryRecentVideos();
 }
 
 if (m.event?.event === 'database query by date') {
     log('=== RESULTS ===');
     log('Events:', m.event.data?.length || 0);
     
-    // Find first video not yet downloaded
-    const undownloadedVideo = m.event.data?.find(r => !downloadedVideos.has(r.storage_path));
+    // Filter events by DOORBELL_SN
+    const doorbellEvents = (m.event.data || []).filter(e => e.device_sn === DOORBELL_SN);
+    log(`Doorbell events (${DOORBELL_SN}):`, doorbellEvents.length);
     
-    if (undownloadedVideo) {
-        const r = undownloadedVideo;
-        log(JSON.stringify(r, null, 2));
-        outputPath = './local_files/' + r.storage_path.split('/').pop().replace('.zxvideo', '.raw');
-        log(`\nDownloading: ${r.storage_path}`);
-        
-        const downloadParams = { serialNumber: r.device_sn, path: r.storage_path, cipherId: r.cipher_id };
-        log('📥 start_download params:', JSON.stringify(downloadParams, null, 2));
-        
-        downloadedVideos.add(r.storage_path);
-        send('device.start_download', downloadParams);
-    } else {
-        log('No new videos to download');
-        ws.close(); 
-        process.exit();
+    if (doorbellEvents.length === 0) {
+        log('No doorbell events found');
+        return;
     }
+    
+    // Sort by start_time to get most recent event
+    doorbellEvents.sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
+    const mostRecentEvent = doorbellEvents[0];
+    
+    log('Most recent event:', JSON.stringify(mostRecentEvent, null, 2));
+    
+    // Check if already sent to n8n
+    if (sentEvents.has(mostRecentEvent.storage_path)) {
+        log('Event already sent to n8n, skipping');
+        return;
+    }
+    
+    // Mark as sent and download
+    sentEvents.add(mostRecentEvent.storage_path);
+    outputPath = './local_files/' + mostRecentEvent.storage_path.split('/').pop().replace('.zxvideo', '.raw');
+    log(`\nDownloading: ${mostRecentEvent.storage_path}`);
+    
+    const downloadParams = { serialNumber: mostRecentEvent.device_sn, path: mostRecentEvent.storage_path, cipherId: mostRecentEvent.cipher_id };
+    log('📥 start_download params:', JSON.stringify(downloadParams, null, 2));
+    
+    send('device.start_download', downloadParams);
 }
 
 if (m.event?.event === 'download started') {
     log('Download started...');
+    videoChunks = []; // Clear previous video chunks
 }
 
 if (m.event?.event === 'download video data' && m.event.buffer?.data) {
@@ -91,7 +126,6 @@ if (m.event?.event === 'download video data' && m.event.buffer?.data) {
 }
 
 if (m.event?.event === 'download finished') {
-    downloadComplete = true;
     const buffer = Buffer.concat(videoChunks);
     fs.writeFileSync(outputPath, buffer);
     const mp4Path = outputPath.replace('.raw', '.mp4');
@@ -127,16 +161,9 @@ if (m.event?.event === 'download finished') {
     } catch (e) {
         log('❌ Failed to convert/send video:', e.message);
     }
-    
-    ws.close();
-    process.exit(0);
 }
 
 if (m.success === false) { 
     console.log('ERROR:', m.error); 
-    ws.close(); 
-    process.exit(1); 
 }
 });
-
-setTimeout(() => { console.log('Timeout'); process.exit(1); }, 120000);
