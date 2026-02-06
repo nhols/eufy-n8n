@@ -3,7 +3,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import axios from 'axios';
 import { log } from './logger.js';
-import { OUTPUT_DIR, N8N_WEBHOOK_URL, HOMEBASE_SN } from './config.js';
+import { OUTPUT_DIR, N8N_WEBHOOK_URL, HOMEBASE_SN, N8N_WEBHOOK_USER, N8N_WEBHOOK_PASSWORD } from './config.js';
 
 /**
  * Manages a serial download queue and collects both video *and* audio chunks
@@ -202,6 +202,10 @@ export class DownloadManager {
     const mp4Data = fs.readFileSync(mp4Path);
     const mp4Base64 = mp4Data.toString('base64');
 
+    const auth = N8N_WEBHOOK_USER && N8N_WEBHOOK_PASSWORD
+      ? { username: N8N_WEBHOOK_USER, password: N8N_WEBHOOK_PASSWORD }
+      : undefined;
+
     const resp = await axios.post(
       N8N_WEBHOOK_URL,
       {
@@ -215,7 +219,7 @@ export class DownloadManager {
           filename: path.basename(mp4Path),
         },
       },
-      { timeout: 30_000 },
+      { timeout: 30_000, auth },
     );
 
     log('📨 Sent video to n8n');

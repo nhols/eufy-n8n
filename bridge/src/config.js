@@ -2,6 +2,8 @@ export const EUFY_WS_URL = process.env.EUFY_WS_URL ?? 'ws://localhost:3000';
 export const HOMEBASE_SN = process.env.HOMEBASE_SN;
 export const DOORBELL_SN = process.env.DOORBELL_SN;
 export const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
+export const N8N_WEBHOOK_USER = process.env.N8N_WEBHOOK_USER;
+export const N8N_WEBHOOK_PASSWORD = process.env.N8N_WEBHOOK_PASSWORD;
 export const OUTPUT_DIR = process.env.OUTPUT_DIR ?? './local_files';
 
 export const CONNECT_TIMEOUT_MS = 10 * 60 * 1000;       // 10 minutes
