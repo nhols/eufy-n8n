@@ -12,6 +12,7 @@ local_files/
 # Environment keys
 .env
 .env.local
+.env.prod
 
 # Operating System Files
 .DS_Store

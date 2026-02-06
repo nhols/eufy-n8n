@@ -54,6 +54,29 @@ The bridge (`bridge/`) is split into modules:
 - Docker and Docker Compose
 - A domain pointed at your VM (for n8n HTTPS via Caddy)
 
+### DigitalOcean droplet setup
+
+```sh
+# Update package index
+sudo apt update
+
+# Install required tools
+# - make: build automation
+# - docker.io: Docker engine
+# - docker-compose-v2: Docker Compose (v2 plugin)
+sudo apt install -y make docker.io docker-compose-v2
+
+# Enable Docker to start on boot
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Allow current user to run Docker without sudo
+sudo usermod -aG docker $USER
+
+# IMPORTANT:
+# Log out and log back in (or reboot) for the docker group change to take effect
+```
+
 ### Environment
 
 Copy `.env.example` (or create `.env`) with:
