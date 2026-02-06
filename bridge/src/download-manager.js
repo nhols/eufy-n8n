@@ -62,6 +62,8 @@ export class DownloadManager {
       storagePath: evt.storage_path,
       cipherId: evt.cipher_id,
       outputBasename: basename,
+      startTime: evt.start_time,
+      endTime: evt.end_time,
     };
 
     this.activeDownloads.set(evt.device_sn, {
@@ -178,7 +180,10 @@ export class DownloadManager {
       log(`✅ Converted to ${mp4Path}`);
 
       // ── send to n8n ────────────────────────────────────────────────
-      await this.sendToN8n(mp4Path);
+      await this.sendToN8n(mp4Path, {
+        startTime: this.currentDownload?.startTime,
+        endTime: this.currentDownload?.endTime,
+      });
 
       // ── clean up raw files ─────────────────────────────────────────
       try { fs.unlinkSync(videoRawPath); } catch { /* ignore */ }
@@ -193,7 +198,7 @@ export class DownloadManager {
   }
 
   /** @private POST a finished mp4 to the n8n webhook as base64. */
-  async sendToN8n(mp4Path) {
+  async sendToN8n(mp4Path, { startTime, endTime } = {}) {
     const mp4Data = fs.readFileSync(mp4Path);
     const mp4Base64 = mp4Data.toString('base64');
 
@@ -202,6 +207,8 @@ export class DownloadManager {
       {
         receivedAt: new Date().toISOString(),
         stationSerialNumber: HOMEBASE_SN,
+        startTime,
+        endTime,
         data: {
           mimeType: 'video/mp4',
           base64: mp4Base64,
