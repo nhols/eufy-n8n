@@ -25,7 +25,7 @@ RUN npm ci \
 
 FROM node:20-alpine
 
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini bash jq
 
 WORKDIR /usr/src/app
 COPY --from=build /build/eufy-security-ws /usr/src/app
@@ -34,4 +34,4 @@ EXPOSE 3000
 VOLUME /data
 
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "--security-revert=CVE-2023-46809", "dist/bin/server.js", "--host", "0.0.0.0"]
+CMD ["/bin/bash", "/usr/src/app/docker/run.sh"]

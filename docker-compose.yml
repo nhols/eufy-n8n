@@ -16,10 +16,11 @@ services:
       - PASSWORD=${EUFY_PASSWORD}
       - COUNTRY=${EUFY_COUNTRY}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
-      interval: 30s
+      test: ["CMD", "node", "-e", "const s=require('net').createConnection(3000,'localhost');s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))"]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   eufy-bridge:
     build: ./bridge
