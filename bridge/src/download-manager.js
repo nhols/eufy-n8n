@@ -185,9 +185,10 @@ export class DownloadManager {
         endTime: this.currentDownload?.endTime,
       });
 
-      // ── clean up raw files ─────────────────────────────────────────
+      // ── clean up intermediate and final files ──────────────────────
       try { fs.unlinkSync(videoRawPath); } catch { /* ignore */ }
       if (hasAudio) try { fs.unlinkSync(audioRawPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(mp4Path); log(`🗑️  Deleted ${mp4Path}`); } catch { /* ignore */ }
     } catch (e) {
       log('❌ Failed to convert/send video:', e.message);
     } finally {
