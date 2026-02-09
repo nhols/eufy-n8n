@@ -31,7 +31,6 @@ Eufy doorbell → n8n automation bridge. Monitors a Eufy doorbell for motion/rin
 | **eufy-bridge** | Node.js app that connects to eufy-ws, listens for doorbell events, downloads recordings with audio, converts to MP4 via ffmpeg, and POSTs to n8n. Also runs a captcha HTTP server on port 8080. |
 | **n8n** | Workflow automation. Receives video webhooks from eufy-bridge. Exposed via Caddy at `https://{SUBDOMAIN}.{DOMAIN_NAME}`. |
 | **caddy** | Reverse proxy with automatic HTTPS for n8n. |
-| **log-exporter** | Exports Docker container logs to `local_files/logs/`. |
 
 ### Bridge internals
 

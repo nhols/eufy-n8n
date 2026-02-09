@@ -89,15 +89,6 @@ services:
       - n8n_data:/home/node/.n8n
       - ${DATA_FOLDER}/local_files:/files
 
-  log-exporter:
-    image: docker:cli
-    container_name: eufy-log-exporter
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./local_files/logs:/logs
-      - ./scripts:/scripts:ro
-    command: ["/bin/sh", "/scripts/log-exporter.sh"]
 
 volumes:
   caddy_data:
