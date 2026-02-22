@@ -1,0 +1,16 @@
+[project]
+name = "eufy-evals"
+version = "0.1.0"
+description = "Evaluation framework for video doorbell LLM analysis"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0.0",
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "rapidfuzz>=3.0.0",
+    "click>=8.0.0",
+    "streamlit>=1.30.0",
+    "pandas>=2.0.0",
+    "plotly>=5.0.0",
+]

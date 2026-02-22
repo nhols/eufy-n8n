@@ -1,0 +1,14 @@
+name: gemini-3-pro
+provider: gemini
+model: gemini-3-pro-preview
+system_prompt_path: evals/prompts/v1.md
+generation_params:
+  temperature: 1.0
+  media_resolution: MEDIA_RESOLUTION_HIGH
+  fps: 2
+iterations: 1
+judge:
+  provider: gemini
+  model: gemini-3-flash-preview
+  params:
+    temperature: 0.0

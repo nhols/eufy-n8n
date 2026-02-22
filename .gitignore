@@ -26,5 +26,18 @@ ehthumbs.db
 *.swp
 *.swo
 
+# python
+__pycache__/
+*.pyc
+
 # Docker
 docker-compose.override.yml
+
+# Python / uv
+.venv/
+
+# Evals
+evals/videos/
+evals/results/
+evals/test_cases/
+*.yaml
