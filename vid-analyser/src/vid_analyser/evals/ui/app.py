@@ -1,11 +1,10 @@
 import functools
 import os
-from typing import cast
 
 import streamlit as st
-from vid_analyser.evals.model import Golden, TestCase
+from vid_analyser.evals.model import TestCase
 from vid_analyser.evals.store.local import LocalStore
-from vid_analyser.llm.response_model import IRMode, ParkingSpotStatus
+from vid_analyser.evals.ui.golden_form import get_golden_form_options, render_golden_widget
 
 
 def get_local_store() -> LocalStore:
@@ -15,41 +14,6 @@ def get_local_store() -> LocalStore:
             "LOCAL_STORE_DIR not found in .env. Set LOCAL_STORE_DIR to a local directory containing videos for labelling."
         )
     return LocalStore(root=local_store_dir)
-
-
-def get_options() -> dict[str, list[str]]:
-    store = get_local_store()
-    cases = store.get_labelled_cases()
-    number_plate_options = sorted({case.golden.number_plate for case in cases if case.golden.number_plate})
-    event_checklist_options = sorted({event for case in cases for event in case.golden.event_checklist})
-    people_options = sorted({person for case in cases for person in case.golden.people})
-    return {
-        "number_plate": number_plate_options,
-        "event_checklist": event_checklist_options,
-        "people": people_options,
-    }
-
-
-def golden_widget() -> Golden | None:
-    with st.form("golden_form"):
-        ir_mode = st.selectbox("IR Mode", options=IRMode.__args__)
-        parking_spot_status = st.selectbox("Parking Spot Status", options=ParkingSpotStatus.__args__)
-        options = get_options()
-        number_plate = st.selectbox("Number Plate (if any)", options=options["number_plate"], accept_new_options=True)
-        event_checklist = st.multiselect(
-            "Event Checklist (one item per line)", options=options["event_checklist"], accept_new_options=True
-        )
-        people = st.multiselect("People (one name per line)", options=options["people"], accept_new_options=True)
-        send_notification = st.checkbox("Send Notification")
-        if st.form_submit_button(":material/save:"):
-            return Golden(
-                ir_mode=cast("IRMode", ir_mode),
-                parking_spot_status=cast("ParkingSpotStatus", parking_spot_status),
-                number_plate=number_plate,
-                event_checklist=event_checklist,
-                people=people,
-                send_notification=send_notification,
-            )
 
 
 def page(case: str | TestCase) -> None:
@@ -67,10 +31,12 @@ def page(case: str | TestCase) -> None:
     with col1:
         st.video(vid, autoplay=True, loop=True)
     with col2:
-        golden = golden_widget()
+        form_options = get_golden_form_options(store)
+        existing_golden = case.golden if isinstance(case, TestCase) else None
+        golden = render_golden_widget(form_options, existing_golden)
         if golden is not None:
             store.save_golden_case(golden, store.get_video(video_key), name=video_key)
-            st.session_state.notify.append({video_key})
+            st.session_state.notify.append(video_key)
             st.rerun()
 
 
