@@ -6,7 +6,7 @@ ParkingSpotStatus = Literal["occupied", "vacant", "car entering", "car leaving",
 IRMode = Literal["yes", "no", "unknown"]
 
 
-class AnalyzeResponse(BaseModel):
+class AnalyseResponse(BaseModel):
     ir_mode: IRMode
     parking_spot_status: ParkingSpotStatus
     number_plate: str | None

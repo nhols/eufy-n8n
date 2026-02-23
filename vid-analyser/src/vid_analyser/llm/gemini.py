@@ -1,0 +1,86 @@
+import asyncio
+import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+from vid_analyser.llm.base import LLMProvider, LlmVideoRequest
+from vid_analyser.llm.response_model import AnalyseResponse
+
+DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+DEFAULT_FPS = 5
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_INITIAL_BACKOFF_SECONDS = 1.0
+DEFAULT_MAX_BACKOFF_SECONDS = 8.0
+
+logger = logging.getLogger(__name__)
+
+
+class GeminiProvider(LLMProvider):
+    name = "gemini"
+
+    def __init__(self, model: str = DEFAULT_GEMINI_MODEL) -> None:
+        load_dotenv()
+        self._client = genai.Client()
+        self._model = model
+
+    async def analyze_video(self, req: LlmVideoRequest) -> AnalyseResponse:
+        video_bytes = Path(req.video_path).read_bytes()
+        response = await self._generate_content_once(req=req, video_bytes=video_bytes)
+        return AnalyseResponse.model_validate(response.parsed)
+
+    @retry(
+        stop=stop_after_attempt(DEFAULT_MAX_RETRIES + 1),
+        wait=wait_exponential(
+            multiplier=DEFAULT_INITIAL_BACKOFF_SECONDS,
+            min=0.0,
+            max=DEFAULT_MAX_BACKOFF_SECONDS,
+        ),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    async def _generate_content_once(
+        self, *, req: LlmVideoRequest, video_bytes: bytes
+    ) -> types.GenerateContentResponse:
+        return await self._client.aio.models.generate_content(
+            model=self._model,
+            contents=types.Content(
+                parts=[
+                    types.Part(
+                        inline_data=types.Blob(data=video_bytes, mime_type="video/mp4"),
+                        video_metadata=types.VideoMetadata(fps=DEFAULT_FPS),
+                    ),
+                    types.Part(text=req.user_message),
+                ]
+            ),
+            config=types.GenerateContentConfig(
+                system_instruction=req.system_message,
+                response_mime_type="application/json",
+                response_json_schema=AnalyseResponse.model_json_schema(),
+                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
+            ),
+        )
+
+
+if __name__ == "__main__":
+    load_dotenv()
+    provider = GeminiProvider()
+    response = asyncio.run(
+        provider.analyze_video(
+            LlmVideoRequest(
+                video_path="/home/neil/repos/eufy-client/eval_data/videos/20260204073042.mp4",
+                user_message="What is in the video?",
+                system_message="You are a helpful assistant that describes the content of videos.",
+            )
+        )
+    )
+    print(response)
