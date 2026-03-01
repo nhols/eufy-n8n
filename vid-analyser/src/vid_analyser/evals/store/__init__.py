@@ -1,8 +1,10 @@
 import hashlib
 from abc import ABC, abstractmethod
 from functools import cached_property
+from typing import Any
 
 from vid_analyser.evals.model import Golden, TestCase
+from vid_analyser.evals.report_model import CaseResult, EvalReport
 
 
 class StoreAbc(ABC):
@@ -20,6 +22,18 @@ class StoreAbc(ABC):
 
     @abstractmethod
     def get_labelled_cases(self) -> list[TestCase]:
+        pass
+
+    @abstractmethod
+    def save_eval_run_config(self, run_id: str, config: dict[str, Any]) -> None:
+        pass
+
+    @abstractmethod
+    def save_eval_case_result(self, run_id: str, result: CaseResult) -> None:
+        pass
+
+    @abstractmethod
+    def save_eval_report(self, run_id: str, report: EvalReport) -> None:
         pass
 
     @property
