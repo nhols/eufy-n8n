@@ -1564,6 +1564,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
+    { name = "streamlit" },
 ]
 ui = [
     { name = "boto3" },
@@ -1586,6 +1587,7 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.15.2" },
+    { name = "streamlit", specifier = ">=1.54.0" },
 ]
 ui = [
     { name = "boto3", specifier = ">=1.40.0" },

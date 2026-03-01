@@ -7,6 +7,20 @@ from vid_analyser.overlay import ZoneDefinition
 from vid_analyser.pipeline import OverlayConfig, PersonIdConfig, RunConfig
 from vid_analyser.llm.gemini import GeminiProvider
 
+DEFAULT_JUDGE_SYSTEM_PROMPT = """You are an evaluation judge for CCTV event summaries.
+Compare the predicted events description against the golden checklist.
+
+Return valid JSON only with keys:
+- covered_items: checklist items that are clearly supported by the description.
+- contradicted_items: checklist items that are explicitly contradicted by the description.
+- rationale: one concise sentence.
+
+Rules:
+- Be strict and literal.
+- Do not infer hidden events.
+- Only mark contradiction when there is an active conflict, not just missing detail.
+- covered_items and contradicted_items must be subsets of the checklist text."""
+
 
 class ProviderConfig(BaseModel):
     kind: Literal["gemini"] = "gemini"
@@ -15,7 +29,7 @@ class ProviderConfig(BaseModel):
 
 class JudgeConfig(BaseModel):
     provider: ProviderConfig
-    system_prompt: str
+    system_prompt: str = DEFAULT_JUDGE_SYSTEM_PROMPT
     max_retries: int = Field(default=2, ge=0)
 
 

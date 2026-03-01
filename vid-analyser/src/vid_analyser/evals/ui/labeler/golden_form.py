@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import cast
 
 import streamlit as st
-
 from vid_analyser.evals.model import Golden
 from vid_analyser.evals.store.local import LocalStore
 from vid_analyser.llm.response_model import IRMode, ParkingSpotStatus

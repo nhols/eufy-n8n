@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import tempfile
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -9,6 +10,8 @@ from vid_analyser.evals.model import TestCase
 from vid_analyser.evals.report_model import CaseResult, CaseScores, EvalReport, JudgeResult
 from vid_analyser.evals.store import StoreAbc
 from vid_analyser.pipeline import RunConfig, run
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_plate(value: str | None) -> str | None:
@@ -122,9 +125,15 @@ async def _evaluate_case(
 
 
 async def run_eval(store: StoreAbc, config: EvalConfig) -> EvalReport:
+    logger.info(
+        "Starting eval run: run_id=%s max_concurrency=%s",
+        config.run_id,
+        config.max_concurrency,
+    )
     store.save_eval_run_config(config.run_id, config.to_persistable_dict())
 
     cases = store.get_labelled_cases()
+    logger.info("Loaded labelled cases: run_id=%s cases=%s", config.run_id, len(cases))
     if not cases:
         report = EvalReport(
             total_cases=0,
@@ -134,6 +143,7 @@ async def run_eval(store: StoreAbc, config: EvalConfig) -> EvalReport:
             cases=[],
         )
         store.save_eval_report(config.run_id, report)
+        logger.info("Completed eval run with no cases: run_id=%s", config.run_id)
         return report
 
     run_config = config.run_config
@@ -142,6 +152,7 @@ async def run_eval(store: StoreAbc, config: EvalConfig) -> EvalReport:
 
     async def _worker(case: TestCase) -> CaseResult:
         async with semaphore:
+            logger.info("Evaluating case: run_id=%s video_path=%s", config.run_id, case.video_path)
             result = await _evaluate_case(
                 case=case,
                 store=store,
@@ -152,10 +163,30 @@ async def run_eval(store: StoreAbc, config: EvalConfig) -> EvalReport:
             try:
                 store.save_eval_case_result(config.run_id, result)
             except Exception as exc:
+                logger.warning(
+                    "Failed to persist case result: run_id=%s video_path=%s error=%s",
+                    config.run_id,
+                    case.video_path,
+                    exc,
+                )
                 if result.error:
                     result.error = f"{result.error}; failed to persist result: {exc}"
                 else:
                     result.error = f"failed to persist result: {exc}"
+            if result.error:
+                logger.warning(
+                    "Case evaluation failed: run_id=%s video_path=%s error=%s",
+                    config.run_id,
+                    case.video_path,
+                    result.error,
+                )
+            else:
+                logger.info(
+                    "Case evaluation complete: run_id=%s video_path=%s total=%s",
+                    config.run_id,
+                    case.video_path,
+                    result.scores.total if result.scores else None,
+                )
             return result
 
     results = await asyncio.gather(*(_worker(case) for case in cases))
@@ -172,4 +203,12 @@ async def run_eval(store: StoreAbc, config: EvalConfig) -> EvalReport:
         cases=results,
     )
     store.save_eval_report(config.run_id, report)
+    logger.info(
+        "Completed eval run: run_id=%s total=%s successful=%s failed=%s average_total=%s",
+        config.run_id,
+        report.total_cases,
+        report.successful_cases,
+        report.failed_cases,
+        report.average_total_score,
+    )
     return report

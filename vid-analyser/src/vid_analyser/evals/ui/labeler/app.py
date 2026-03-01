@@ -4,7 +4,7 @@ import os
 import streamlit as st
 from vid_analyser.evals.model import TestCase
 from vid_analyser.evals.store.local import LocalStore
-from vid_analyser.evals.ui.golden_form import get_golden_form_options, render_golden_widget
+from vid_analyser.evals.ui.labeler.golden_form import get_golden_form_options, render_golden_widget
 
 
 def get_local_store() -> LocalStore:
@@ -17,7 +17,6 @@ def get_local_store() -> LocalStore:
 
 
 def page(case: str | TestCase) -> None:
-
     store = get_local_store()
     if isinstance(case, str):
         vid = store.get_video(case)

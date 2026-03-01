@@ -34,6 +34,8 @@ class ZoneDefinition(BaseModel):
     def colour_from_string(cls, color_name: Any) -> Any:
         if isinstance(color_name, str):
             return Color.from_string(color_name)
+        if isinstance(color_name, (list, tuple)):
+            return Color(tuple(color_name))
         return color_name
 
 
