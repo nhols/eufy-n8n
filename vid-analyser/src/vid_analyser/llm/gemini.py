@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from pathlib import Path
 
@@ -73,14 +72,3 @@ class GeminiProvider(LLMProvider):
 
 if __name__ == "__main__":
     load_dotenv()
-    provider = GeminiProvider()
-    response = asyncio.run(
-        provider.analyze_video(
-            LlmVideoRequest(
-                video_path="/home/neil/repos/eufy-client/eval_data/videos/20260204073042.mp4",
-                user_message="What is in the video?",
-                system_message="You are a helpful assistant that describes the content of videos.",
-            )
-        )
-    )
-    print(response)
