@@ -11,4 +11,5 @@ class AnalyseResponse(BaseModel):
     parking_spot_status: ParkingSpotStatus
     number_plate: str | None
     events_description: str
+    message_for_user: str
     send_notification: bool

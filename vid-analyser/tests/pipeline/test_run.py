@@ -23,6 +23,7 @@ class FakeProvider:
             parking_spot_status="unknown",
             number_plate=None,
             events_description="none",
+            message_for_user="Nothing relevant happened at your property.",
             send_notification=False,
         )
 

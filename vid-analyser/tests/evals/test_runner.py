@@ -108,6 +108,7 @@ def test_run_eval_with_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
         parking_spot_status="vacant",
         number_plate="AB 12-CD",
         events_description="A person approached the door.",
+        message_for_user="Someone approached your door.",
         send_notification=True,
     )
 
@@ -181,6 +182,7 @@ def test_run_eval_records_case_errors_and_continues(monkeypatch: pytest.MonkeyPa
         parking_spot_status="occupied",
         number_plate="AB12",
         events_description="car parked",
+        message_for_user="A car is parked in your parking spot.",
         send_notification=True,
     )
 
@@ -260,6 +262,7 @@ def test_run_eval_respects_max_concurrency(monkeypatch: pytest.MonkeyPatch) -> N
             parking_spot_status="vacant",
             number_plate=None,
             events_description="quiet",
+            message_for_user="Nothing relevant happened at your property.",
             send_notification=False,
         )
 

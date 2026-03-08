@@ -56,6 +56,7 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
         parking_spot_status="unknown",
         number_plate=None,
         events_description="none",
+        message_for_user="Nothing relevant happened at your property.",
         send_notification=False,
     )
     captured: dict[str, object] = {}

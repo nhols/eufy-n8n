@@ -31,6 +31,7 @@ def _case_result(video_path: str, video_hash: str, total: float, error: str | No
             parking_spot_status="vacant",
             number_plate=None,
             events_description="A person leaves the house.",
+            message_for_user="Someone left your house.",
             send_notification=True,
         ),
         scores=CaseScores(
