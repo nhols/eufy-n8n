@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from vid_analyser.db import ExecutionRepository, init_database
+from vid_analyser.db import ExecutionRepository, ExecutionStatus, NotificationStatus, init_database
 from vid_analyser.notifications import NotificationService, TelegramNotificationService
 from vid_analyser.pipeline import RunConfig, run
 
@@ -145,7 +145,7 @@ async def analyse_video(
         execution_id=execution_id,
         created_at=now,
         updated_at=now,
-        status="received",
+        status=ExecutionStatus.RECEIVED,
         source="eufy-bridge",
         event_metadata=metadata.model_dump(exclude_none=True),
         input_video_filename=video.filename,
@@ -155,7 +155,7 @@ async def analyse_video(
         station_serial_number=metadata.station_serial_number,
         event_start_time=metadata.start_time,
         event_end_time=metadata.end_time,
-        notification_status="pending" if notifications_configured else "not_configured",
+        notification_status=NotificationStatus.PENDING if notifications_configured else NotificationStatus.NOT_CONFIGURED,
         notification_channel="telegram" if app.state.run_config.telegram_chat_id else None,
         notification_target=app.state.run_config.telegram_chat_id,
         config_snapshot=app.state.run_config_document,
@@ -173,7 +173,7 @@ async def analyse_video(
         app.state.execution_repository.update_execution(
             execution_id,
             updated_at=_utc_now(),
-            status="failed",
+            status=ExecutionStatus.FAILED,
             error_message="Uploaded video is empty",
         )
         raise HTTPException(status_code=400, detail="Uploaded video is empty")
@@ -196,14 +196,14 @@ async def analyse_video(
         app.state.execution_repository.update_execution(
             execution_id,
             updated_at=_utc_now(),
-            status="analysed",
+            status=ExecutionStatus.ANALYSED,
             analysis_result_json=response.model_dump(mode="json"),
             notification_status=(
-                "pending"
+                NotificationStatus.PENDING
                 if response.send_notification and notifications_configured
-                else "not_requested"
+                else NotificationStatus.NOT_REQUESTED
                 if not response.send_notification
-                else "not_configured"
+                else NotificationStatus.NOT_CONFIGURED
             ),
         )
         if response.send_notification and notifications_configured:
@@ -216,8 +216,8 @@ async def analyse_video(
                 app.state.execution_repository.update_execution(
                     execution_id,
                     updated_at=_utc_now(),
-                    status="notified",
-                    notification_status="sent",
+                    status=ExecutionStatus.NOTIFIED,
+                    notification_status=NotificationStatus.SENT,
                     notification_channel="telegram",
                     notification_target=app.state.run_config.telegram_chat_id,
                     notification_sent_at=_utc_now(),
@@ -228,7 +228,7 @@ async def analyse_video(
                 app.state.execution_repository.update_execution(
                     execution_id,
                     updated_at=_utc_now(),
-                    notification_status="failed",
+                    notification_status=NotificationStatus.FAILED,
                     notification_channel="telegram",
                     notification_target=app.state.run_config.telegram_chat_id,
                     notification_error="Telegram send failed",
@@ -238,7 +238,7 @@ async def analyse_video(
             app.state.execution_repository.update_execution(
                 execution_id,
                 updated_at=_utc_now(),
-                notification_status="not_configured",
+                notification_status=NotificationStatus.NOT_CONFIGURED,
             )
 
         duration_ms = (time.perf_counter() - start) * 1000
@@ -256,7 +256,7 @@ async def analyse_video(
         app.state.execution_repository.update_execution(
             execution_id,
             updated_at=_utc_now(),
-            status="failed",
+            status=ExecutionStatus.FAILED,
             error_message="Video analysis failed",
         )
         logger.exception(

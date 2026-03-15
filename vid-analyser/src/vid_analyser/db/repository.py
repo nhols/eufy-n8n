@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vid_analyser.db.types import ExecutionStatus, NotificationStatus
+
 
 @dataclass(slots=True)
 class ExecutionRecord:
@@ -43,7 +45,7 @@ class ExecutionRepository:
         execution_id: str,
         created_at: str,
         updated_at: str,
-        status: str,
+        status: ExecutionStatus,
         source: str,
         event_metadata: dict[str, Any],
         input_video_filename: str | None,
@@ -54,7 +56,7 @@ class ExecutionRepository:
         event_start_time: str | None,
         event_end_time: str | None,
         event_type: str | None = None,
-        notification_status: str | None = None,
+        notification_status: NotificationStatus | None = None,
         notification_channel: str | None = None,
         notification_target: str | None = None,
         config_snapshot: dict[str, Any] | None = None,
@@ -77,12 +79,12 @@ class ExecutionRepository:
                     execution_id,
                     created_at,
                     updated_at,
-                    status,
+                    status.value,
                     source,
                     input_video_filename,
                     input_video_content_type,
                     input_video_size_bytes,
-                    notification_status,
+                    notification_status.value if notification_status is not None else None,
                     notification_channel,
                     notification_target,
                     event_type,
@@ -130,6 +132,8 @@ class ExecutionRepository:
 def _serialise_field(key: str, value: Any) -> Any:
     if key.endswith("_json") and value is not None:
         return _to_json(value)
+    if isinstance(value, (ExecutionStatus, NotificationStatus)):
+        return value.value
     return value
 
 
