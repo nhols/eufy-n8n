@@ -29,6 +29,11 @@ ehthumbs.db
 # Docker
 docker-compose.override.yml
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+
 # Python
 __pycache__/
 *.pyc

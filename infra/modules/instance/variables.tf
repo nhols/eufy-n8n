@@ -26,7 +26,7 @@ variable "root_volume_size_gb" {
 
 variable "app_dir" {
   type    = string
-  default = "/opt/eufy-client"
+  default = "/opt/argusai"
 }
 
 variable "user_data_template" {

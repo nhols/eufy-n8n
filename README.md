@@ -1,4 +1,4 @@
-# eufy-client
+# ArgusAI
 
 Eufy doorbell processing stack. Monitors a Eufy doorbell for motion/ring events, downloads recordings from the homebase, converts them to MP4, and sends them to the FastAPI analyser service.
 
@@ -152,7 +152,7 @@ This project runs from source via `docker compose build`. To deploy or update:
 
 3. **On the VM — pull and rebuild:**
    ```sh
-   cd /path/to/eufy-client
+   cd /path/to/argusai
    git pull
    docker compose build      # rebuilds eufy-ws and eufy-bridge images
    docker compose up -d       # restarts with new images

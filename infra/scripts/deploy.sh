@@ -17,7 +17,7 @@ Required:
 Optional:
   --config-key   S3 config key (default: config/run_config.json)
   --git-ref      Git branch, tag, or commit to deploy (default: current HEAD)
-  --app-dir      Remote app dir (default: /opt/eufy-client)
+  --app-dir      Remote app dir (default: /opt/argusai)
 EOF
 }
 
@@ -29,7 +29,7 @@ CONFIG_FILE=""
 BUCKET=""
 CONFIG_KEY="config/run_config.json"
 GIT_REF="$(git rev-parse HEAD)"
-APP_DIR="/opt/eufy-client"
+APP_DIR="/opt/argusai"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,7 +84,7 @@ COMMAND_ID="$(
   aws --region "$AWS_REGION" ssm send-command \
     --instance-ids "$INSTANCE_ID" \
     --document-name "AWS-RunShellScript" \
-    --comment "Deploy eufy-client" \
+    --comment "Deploy ArgusAI" \
     --parameters "commands=${COMMANDS_JSON}" \
     --query 'Command.CommandId' \
     --output text
