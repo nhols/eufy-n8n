@@ -8,8 +8,8 @@ Current scope:
 - one EC2 instance
 - one S3 bucket
 - one IAM role / instance profile
-- private EC2 instance in an existing VPC / subnet
-- AWS Systems Manager (SSM) access instead of SSH / public IPv4
+- EC2 instance in an existing VPC / subnet with a public IPv4
+- SSH access restricted by CIDR
 - no DNS
 - no Terraform-managed secrets
 
@@ -20,14 +20,14 @@ Current scope:
 - `modules/instance`: EC2 instance, security group, and bootstrap user data
 - `environments/example`: example environment wiring the modules together
 - `scripts/bootstrap.sh.tftpl`: instance bootstrap script used by Terraform
-- `scripts/deploy.sh`: local deploy helper to upload config to S3 and deploy over SSM
+- `scripts/deploy.sh`: local deploy helper to sync the repo, copy `.env`, upload config, and start Compose
 
 ## Typical flow
 
 1. Copy `infra/environments/example/terraform.tfvars.example` to `terraform.tfvars` and fill in values.
 2. Run `terraform init` and `terraform apply` from the environment directory.
 3. Use `infra/scripts/deploy.sh` to:
-   - clone or update the repo on the instance
-   - write the `.env` on the instance
+   - sync the repo to the instance
+   - copy the `.env`
    - upload the analyser config JSON to S3
-   - run `docker compose up -d --build` via SSM
+   - run `docker compose up -d --build`

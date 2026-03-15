@@ -7,6 +7,14 @@ resource "aws_security_group" "this" {
   description = "Security group for ${var.name}"
   vpc_id      = var.vpc_id
 
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -24,7 +32,8 @@ resource "aws_instance" "this" {
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [aws_security_group.this.id]
-  associate_public_ip_address = false
+  key_name                    = var.key_name
+  associate_public_ip_address = true
   iam_instance_profile        = var.instance_profile_name
   user_data                   = templatefile(var.user_data_template, { app_dir = var.app_dir })
 

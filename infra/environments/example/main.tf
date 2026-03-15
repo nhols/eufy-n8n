@@ -25,6 +25,8 @@ module "instance" {
   subnet_id             = var.subnet_id
   instance_type         = var.instance_type
   instance_profile_name = module.iam.instance_profile_name
+  key_name              = var.key_name
+  ssh_cidr              = var.ssh_cidr
   root_volume_size_gb   = var.root_volume_size_gb
   app_dir               = var.app_dir
   user_data_template    = "${path.module}/../../scripts/bootstrap.sh.tftpl"

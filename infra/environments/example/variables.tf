@@ -38,6 +38,16 @@ variable "vpc_id" {
   type = string
 }
 
+variable "ssh_cidr" {
+  type    = string
+  default = "0.0.0.0/0"
+}
+
+variable "key_name" {
+  type    = string
+  default = null
+}
+
 variable "root_volume_size_gb" {
   type    = number
   default = 20
