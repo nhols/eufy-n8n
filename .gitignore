@@ -33,6 +33,8 @@ docker-compose.override.yml
 .terraform/
 *.tfstate
 *.tfstate.backup
+*.tfvars
+!*.tfvars.example
 
 # Python
 __pycache__/

@@ -12,11 +12,6 @@ variable "video_expiration_days" {
   default = null
 }
 
-variable "enable_versioning" {
-  type    = bool
-  default = false
-}
-
 variable "tags" {
   type    = map(string)
   default = {}

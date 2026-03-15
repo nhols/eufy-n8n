@@ -25,14 +25,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   }
 }
 
-resource "aws_s3_bucket_versioning" "this" {
-  bucket = aws_s3_bucket.this.id
-
-  versioning_configuration {
-    status = var.enable_versioning ? "Enabled" : "Suspended"
-  }
-}
-
 resource "aws_s3_bucket_lifecycle_configuration" "this" {
   count  = var.video_expiration_days == null ? 0 : 1
   bucket = aws_s3_bucket.this.id
