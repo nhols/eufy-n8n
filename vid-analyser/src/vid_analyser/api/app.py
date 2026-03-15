@@ -20,9 +20,12 @@ logger = logging.getLogger(__name__)
 
 CONFIG_S3_BUCKET_ENV_VAR = "VID_ANALYSER_CONFIG_S3_BUCKET"
 CONFIG_S3_KEY_ENV_VAR = "VID_ANALYSER_CONFIG_S3_KEY"
+VIDEO_S3_BUCKET_ENV_VAR = "VID_ANALYSER_VIDEO_S3_BUCKET"
+VIDEO_S3_PREFIX_ENV_VAR = "VID_ANALYSER_VIDEO_S3_PREFIX"
 SQLITE_PATH_ENV_VAR = "VID_ANALYSER_SQLITE_PATH"
 TELEGRAM_BOT_TOKEN_ENV_VAR = "TELEGRAM_BOT_TOKEN"
 DEFAULT_CONFIG_S3_KEY = "config/run_config.json"
+DEFAULT_VIDEO_S3_PREFIX = "videos"
 DEFAULT_SQLITE_PATH = "/app/data/vid_analyser.db"
 DEFAULT_USER_PROMPT = "Analyse this doorbell video and return the required JSON response."
 DEFAULT_SYSTEM_PROMPT = (
@@ -57,6 +60,23 @@ def _build_notification_service() -> NotificationService | None:
         logger.info("Telegram bot token not configured; notifications disabled")
         return None
     return TelegramNotificationService(token=token)
+
+
+def _build_video_s3_key(*, execution_id: str, filename: str | None) -> str:
+    safe_filename = filename or "video.mp4"
+    prefix = os.getenv(VIDEO_S3_PREFIX_ENV_VAR, DEFAULT_VIDEO_S3_PREFIX).strip("/")
+    return f"{prefix}/{execution_id}/{safe_filename}"
+
+
+def _upload_video_to_s3(*, video_path: str | Path, bucket: str, key: str, content_type: str | None) -> None:
+    import boto3
+
+    extra_args = {"ContentType": content_type} if content_type else None
+    s3 = boto3.client("s3")
+    if extra_args:
+        s3.upload_file(str(video_path), bucket, key, ExtraArgs=extra_args)
+    else:
+        s3.upload_file(str(video_path), bucket, key)
 
 
 def _utc_now() -> str:
@@ -99,6 +119,7 @@ async def lifespan(app: FastAPI):
     app.state.run_config_document = _load_run_config_document_from_s3(bucket, key)
     app.state.run_config = RunConfig.from_json_text(json.dumps(app.state.run_config_document))
     app.state.notification_service = _build_notification_service()
+    app.state.video_s3_bucket = os.getenv(VIDEO_S3_BUCKET_ENV_VAR, bucket)
     db_path = os.getenv(SQLITE_PATH_ENV_VAR, DEFAULT_SQLITE_PATH)
     init_database(db_path)
     app.state.execution_repository = ExecutionRepository(db_path)
@@ -134,6 +155,7 @@ async def analyse_video(
     file_size = len(video_bytes)
     now = _utc_now()
     execution_id = str(uuid4())
+    video_s3_key = _build_video_s3_key(execution_id=execution_id, filename=video.filename)
     configured_user_prompt = app.state.run_config.user_prompt or DEFAULT_USER_PROMPT
     configured_system_prompt = app.state.run_config.system_prompt or DEFAULT_SYSTEM_PROMPT
     notifications_configured = bool(
@@ -240,6 +262,29 @@ async def analyse_video(
                 updated_at=_utc_now(),
                 notification_status=NotificationStatus.NOT_CONFIGURED,
             )
+
+        try:
+            _upload_video_to_s3(
+                video_path=temp_path,
+                bucket=app.state.video_s3_bucket,
+                key=video_s3_key,
+                content_type=video.content_type,
+            )
+            app.state.execution_repository.update_execution(
+                execution_id,
+                updated_at=_utc_now(),
+                input_video_s3_bucket=app.state.video_s3_bucket,
+                input_video_s3_key=video_s3_key,
+            )
+            logger.info("Uploaded video to s3://%s/%s", app.state.video_s3_bucket, video_s3_key)
+        except Exception:
+            app.state.execution_repository.update_execution(
+                execution_id,
+                updated_at=_utc_now(),
+                status=ExecutionStatus.FAILED,
+                error_message="Video upload failed",
+            )
+            logger.exception("Failed to upload video to S3 for execution_id=%s", execution_id)
 
         duration_ms = (time.perf_counter() - start) * 1000
         logger.info(

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from vid_analyser.db import ExecutionRepository, init_database
+from vid_analyser.db import ExecutionRepository, ExecutionStatus, NotificationStatus, init_database
 
 
 def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
@@ -13,7 +13,7 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
         execution_id="exec-1",
         created_at="2026-03-15T12:00:00Z",
         updated_at="2026-03-15T12:00:00Z",
-        status="received",
+        status=ExecutionStatus.RECEIVED,
         source="eufy-bridge",
         event_metadata={"storage_path": "abc"},
         input_video_filename="clip.mp4",
@@ -23,16 +23,16 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
         station_serial_number="station-1",
         event_start_time="2026-03-15T11:59:00Z",
         event_end_time="2026-03-15T12:00:00Z",
-        notification_status="not_requested",
+        notification_status=NotificationStatus.NOT_REQUESTED,
         config_snapshot={"config_s3_key": "config/run_config.json"},
     )
 
     repo.update_execution(
         "exec-1",
         updated_at="2026-03-15T12:01:00Z",
-        status="analysed",
+        status=ExecutionStatus.ANALYSED,
         analysis_result_json={"send_notification": True},
-        notification_status="pending",
+        notification_status=NotificationStatus.PENDING,
     )
 
     record = repo.get_execution("exec-1")

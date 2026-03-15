@@ -13,6 +13,8 @@ from vid_analyser.pipeline import RunConfig
 api_module = importlib.import_module("vid_analyser.api.app")
 CONFIG_S3_BUCKET_ENV_VAR = api_module.CONFIG_S3_BUCKET_ENV_VAR
 CONFIG_S3_KEY_ENV_VAR = api_module.CONFIG_S3_KEY_ENV_VAR
+VIDEO_S3_BUCKET_ENV_VAR = api_module.VIDEO_S3_BUCKET_ENV_VAR
+VIDEO_S3_PREFIX_ENV_VAR = api_module.VIDEO_S3_PREFIX_ENV_VAR
 SQLITE_PATH_ENV_VAR = api_module.SQLITE_PATH_ENV_VAR
 TELEGRAM_BOT_TOKEN_ENV_VAR = api_module.TELEGRAM_BOT_TOKEN_ENV_VAR
 app = api_module.app
@@ -85,6 +87,8 @@ def test_run_config_from_json_text_includes_optional_prompts() -> None:
 def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
     monkeypatch.setenv(CONFIG_S3_KEY_ENV_VAR, "config/run_config.json")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
+    monkeypatch.setenv(VIDEO_S3_PREFIX_ENV_VAR, "videos")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setattr(
         api_module,
@@ -94,6 +98,7 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
         ),
     )
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -137,9 +142,11 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
 
 def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setattr(api_module, "_load_run_config_document_from_s3", lambda bucket, key: json.loads(_config_json()))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
     captured: dict[str, object] = {}
 
     async def fake_run(video_path: str | Path, user_prompt: str, system_prompt: str, config: RunConfig):
@@ -162,9 +169,11 @@ def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatc
 
 def test_analyse_video_rejects_empty_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setattr(api_module, "_load_run_config_document_from_s3", lambda bucket, key: json.loads(_config_json()))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
     mocked_run = AsyncMock()
     monkeypatch.setattr(api_module, "run", mocked_run)
 
@@ -182,9 +191,11 @@ def test_analyse_video_rejects_empty_upload(tmp_path: Path, monkeypatch: MonkeyP
 
 def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setattr(api_module, "_load_run_config_document_from_s3", lambda bucket, key: json.loads(_config_json()))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
     response_model = AnalyseResponse(
         ir_mode="unknown",
         parking_spot_status="unknown",
@@ -213,15 +224,22 @@ def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypa
 
 def test_analyse_video_sends_telegram_notification_when_enabled(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
+    monkeypatch.setenv(VIDEO_S3_PREFIX_ENV_VAR, "videos")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setenv(TELEGRAM_BOT_TOKEN_ENV_VAR, "bot-token")
+    call_order: list[str] = []
     fake_service = AsyncMock()
+    async def fake_send_video(**kwargs):
+        call_order.append("notify")
+    fake_service.send_video.side_effect = fake_send_video
     monkeypatch.setattr(
         api_module,
         "_load_run_config_document_from_s3",
         lambda bucket, key: json.loads(_config_json(telegram_chat_id="1234")),
     )
     monkeypatch.setattr(api_module, "_build_notification_service", lambda: fake_service)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: call_order.append("upload"))
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -249,10 +267,13 @@ def test_analyse_video_sends_telegram_notification_when_enabled(tmp_path: Path, 
     assert kwargs["chat_id"] == "1234"
     assert kwargs["caption"] == "A car has arrived in your parking spot."
     assert not Path(kwargs["video_path"]).exists()
+    assert call_order == ["notify", "upload"]
 
 
 def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
+    monkeypatch.setenv(VIDEO_S3_PREFIX_ENV_VAR, "videos")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setattr(
         api_module,
@@ -260,6 +281,7 @@ def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: Mo
         lambda bucket, key: json.loads(_config_json(user_prompt="user from s3")),
     )
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -284,17 +306,20 @@ def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: Mo
         assert response.status_code == 200
         records = client.app.state.execution_repository
 
-    row = records._connect().execute("SELECT status, device_serial_number, station_serial_number, analysis_result_json, config_snapshot_json, notification_status FROM executions").fetchone()
+    row = records._connect().execute("SELECT status, device_serial_number, station_serial_number, analysis_result_json, config_snapshot_json, notification_status, input_video_s3_bucket, input_video_s3_key FROM executions").fetchone()
     assert row["status"] == "analysed"
     assert row["device_serial_number"] == "device-1"
     assert row["station_serial_number"] == "station-1"
     assert '"parking_spot_status": "occupied"' in row["analysis_result_json"]
     assert json.loads(row["config_snapshot_json"])["user_prompt"] == "user from s3"
     assert row["notification_status"] == "not_requested"
+    assert row["input_video_s3_bucket"] == "test-video-bucket"
+    assert row["input_video_s3_key"].startswith("videos/")
 
 
 def test_analyse_video_marks_notification_not_configured_when_requested_without_setup(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
+    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
     monkeypatch.setattr(
         api_module,
@@ -302,6 +327,7 @@ def test_analyse_video_marks_notification_not_configured_when_requested_without_
         lambda bucket, key: json.loads(_config_json(telegram_chat_id="1234")),
     )
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
