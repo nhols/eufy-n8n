@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import axios from 'axios';
+import { Blob } from 'buffer';
 import { log } from './logger.js';
 import {
   OUTPUT_DIR,
@@ -202,24 +203,21 @@ export class DownloadManager {
     }
   }
 
-  /** @private POST a finished mp4 to the analysis API as base64. */
+  /** @private POST a finished mp4 to the analysis API as multipart form-data. */
   async sendToApi(mp4Path, { startTime, endTime } = {}) {
     const mp4Data = fs.readFileSync(mp4Path);
-    const mp4Base64 = mp4Data.toString('base64');
+    const form = new FormData();
+    form.append('video', new Blob([mp4Data], { type: 'video/mp4' }), path.basename(mp4Path));
+    form.append('received_at', new Date().toISOString());
+    if (HOMEBASE_SN) form.append('station_serial_number', HOMEBASE_SN);
+    if (this.currentDownload?.serialNumber) form.append('device_serial_number', this.currentDownload.serialNumber);
+    if (this.currentDownload?.storagePath) form.append('storage_path', this.currentDownload.storagePath);
+    if (startTime) form.append('start_time', startTime);
+    if (endTime) form.append('end_time', endTime);
 
     const resp = await axios.post(
       VID_ANALYSER_API_URL,
-      {
-        receivedAt: new Date().toISOString(),
-        stationSerialNumber: HOMEBASE_SN,
-        startTime,
-        endTime,
-        data: {
-          mimeType: 'video/mp4',
-          base64: mp4Base64,
-          filename: path.basename(mp4Path),
-        },
-      },
+      form,
       { timeout: 30_000 },
     );
 

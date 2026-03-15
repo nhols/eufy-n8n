@@ -75,13 +75,18 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
         response = client.post(
             "/analyse-video",
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
-            data={"user_prompt": "user prompt", "system_prompt": "system prompt"},
+            data={"storage_path": "abc", "start_time": "2026-03-15T10:00:00Z"},
         )
 
     assert response.status_code == 200
     assert response.json() == response_model.model_dump(mode="json")
-    assert captured["user_prompt"] == "user prompt"
-    assert captured["system_prompt"] == "system prompt"
+    assert captured["user_prompt"] == (
+        "Analyse this doorbell video and return the required JSON response.\n\n"
+        "Event metadata:\n"
+        "- storage_path: abc\n"
+        "- start_time: 2026-03-15T10:00:00Z"
+    )
+    assert captured["system_prompt"] == api_module.DEFAULT_SYSTEM_PROMPT
     assert isinstance(captured["config"], RunConfig)
     assert not Path(captured["video_path"]).exists()
 
@@ -101,7 +106,7 @@ def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatc
         response = client.post(
             "/analyse-video",
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
-            data={"user_prompt": "user prompt", "system_prompt": "system prompt"},
+            data={"station_serial_number": "homebase-1"},
         )
 
     assert response.status_code == 500
@@ -119,12 +124,41 @@ def test_analyse_video_rejects_empty_upload(tmp_path: Path, monkeypatch: MonkeyP
         response = client.post(
             "/analyse-video",
             files={"video": ("clip.mp4", b"", "video/mp4")},
-            data={"user_prompt": "user prompt", "system_prompt": "system prompt"},
+            data={"station_serial_number": "homebase-1"},
         )
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Uploaded video is empty"}
     mocked_run.assert_not_awaited()
+
+
+def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    config_path = _write_config(tmp_path)
+    monkeypatch.setenv(RUN_CONFIG_ENV_VAR, str(config_path))
+    response_model = AnalyseResponse(
+        ir_mode="unknown",
+        parking_spot_status="unknown",
+        number_plate=None,
+        events_description="none",
+        message_for_user="Nothing relevant happened at your property.",
+        send_notification=False,
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_run(video_path: str | Path, user_prompt: str, system_prompt: str, config: RunConfig):
+        captured["user_prompt"] = user_prompt
+        return response_model
+
+    monkeypatch.setattr(api_module, "run", fake_run)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyse-video",
+            files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
+        )
+
+    assert response.status_code == 200
+    assert captured["user_prompt"] == api_module.DEFAULT_USER_PROMPT
 
 
 def test_configure_logging_adds_root_handler(monkeypatch: MonkeyPatch) -> None:

@@ -5,15 +5,30 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Request
-from starlette.datastructures import UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 from vid_analyser.pipeline import RunConfig, run
 
 logger = logging.getLogger(__name__)
 
 RUN_CONFIG_ENV_VAR = "VID_ANALYSER_RUN_CONFIG_PATH"
-MAX_PART_SIZE_BYTES = 100 * 1024 * 1024
+DEFAULT_USER_PROMPT = "Analyse this doorbell video and return the required JSON response."
+DEFAULT_SYSTEM_PROMPT = (
+    "You are analysing footage from a fixed residential video doorbell camera. "
+    "Return one JSON object matching the required schema exactly. "
+    "Describe only visible facts and do not add extra keys."
+)
+
+
+class AnalyseVideoMetadata(BaseModel):
+    received_at: str | None = None
+    station_serial_number: str | None = None
+    device_serial_number: str | None = None
+    storage_path: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
 
 
 def configure_logging() -> None:
@@ -28,6 +43,17 @@ def configure_logging() -> None:
     )
 
 
+def _build_user_prompt(metadata: AnalyseVideoMetadata) -> str:
+    metadata_dict = metadata.model_dump(exclude_none=True)
+    if not metadata_dict:
+        return DEFAULT_USER_PROMPT
+
+    lines = [DEFAULT_USER_PROMPT, "", "Event metadata:"]
+    for key, value in metadata_dict.items():
+        lines.append(f"- {key}: {value}")
+    return "\n".join(lines)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
@@ -36,6 +62,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"{RUN_CONFIG_ENV_VAR} is not set")
 
     app.state.run_config = RunConfig.from_json_path(config_path)
+    app.state.system_prompt = DEFAULT_SYSTEM_PROMPT
     logger.info("Loaded run config from %s", config_path)
     yield
 
@@ -46,33 +73,34 @@ app = FastAPI(lifespan=lifespan)
 @app.post("/analyse-video")
 async def analyse_video(
     request: Request,
+    video: Annotated[UploadFile, File(...)],
+    received_at: Annotated[str | None, Form()] = None,
+    station_serial_number: Annotated[str | None, Form()] = None,
+    device_serial_number: Annotated[str | None, Form()] = None,
+    storage_path: Annotated[str | None, Form()] = None,
+    start_time: Annotated[str | None, Form()] = None,
+    end_time: Annotated[str | None, Form()] = None,
 ):
     logger.info("Received analyse-video request from %s", request.client.host if request.client else "unknown")
-    form = await request.form(max_part_size=MAX_PART_SIZE_BYTES)
-    video = form.get("video")
-    user_prompt = form.get("user_prompt")
-    system_prompt = form.get("system_prompt")
-
-    if not isinstance(video, UploadFile):
-        field_names = list(form.keys())
-        logger.warning("Missing/invalid video field. Received form fields: %s", field_names)
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing or invalid video upload. Send the binary file field as 'video', 'file', 'binary', or 'data'."
-            ),
-        )
-    if not isinstance(user_prompt, str) or not isinstance(system_prompt, str):
-        logger.warning("Missing prompt fields. Received form fields: %s", list(form.keys()))
-        raise HTTPException(status_code=400, detail="Missing user_prompt/system_prompt")
+    metadata = AnalyseVideoMetadata(
+        received_at=received_at,
+        station_serial_number=station_serial_number,
+        device_serial_number=device_serial_number,
+        storage_path=storage_path,
+        start_time=start_time,
+        end_time=end_time,
+    )
 
     video_bytes = await video.read()
     file_size = len(video_bytes)
+    user_prompt = _build_user_prompt(metadata)
+    system_prompt = app.state.system_prompt
     logger.info(
-        "Parsed upload filename=%s content_type=%s size_bytes=%s prompt_lengths user=%s system=%s",
+        "Parsed upload filename=%s content_type=%s size_bytes=%s metadata_keys=%s prompt_lengths user=%s system=%s",
         video.filename,
         video.content_type,
         file_size,
+        sorted(metadata.model_dump(exclude_none=True).keys()),
         len(user_prompt),
         len(system_prompt),
     )
