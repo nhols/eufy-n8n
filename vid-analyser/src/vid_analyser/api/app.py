@@ -17,6 +17,7 @@ from vid_analyser.db import ExecutionRepository, ExecutionStatus, NotificationSt
 from vid_analyser.notifications import NotificationService, TelegramNotificationService
 from vid_analyser.pipeline import RunConfig, run
 from vid_analyser.llm.response_model import AnalyseResponse
+from vid_analyser.prompting import build_system_prompt, build_user_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,10 @@ class ExecutionContext:
     system_prompt: str
 
 
-def _load_run_config_document_from_s3(bucket: str, key: str) -> dict:
+def _load_json_document_from_s3(bucket: str, key: str) -> dict:
     import boto3
 
-    logger.info("Loading run config from s3://%s/%s", bucket, key)
+    logger.info("Loading JSON document from s3://%s/%s", bucket, key)
     s3 = boto3.client("s3")
     response = s3.get_object(Bucket=bucket, Key=key)
     body = response["Body"].read().decode("utf-8")
@@ -107,19 +108,6 @@ def configure_logging() -> None:
     )
 
 
-def _build_user_prompt(metadata: AnalyseVideoMetadata, *, base_prompt: str) -> str:
-    metadata_dict = metadata.model_dump(exclude_none=True)
-
-    lines = [base_prompt]
-    if not metadata_dict:
-        return base_prompt
-
-    lines.extend(["", "Event metadata:"])
-    for key, value in metadata_dict.items():
-        lines.append(f"- {key}: {value}")
-    return "\n".join(lines)
-
-
 def _build_execution_context(app: FastAPI, *, video: UploadFile, metadata: AnalyseVideoMetadata) -> ExecutionContext:
     now = _utc_now()
     execution_id = str(uuid4())
@@ -133,8 +121,18 @@ def _build_execution_context(app: FastAPI, *, video: UploadFile, metadata: Analy
         now=now,
         video_s3_key=_build_video_s3_key(execution_id=execution_id, filename=video.filename),
         notifications_configured=notifications_configured,
-        user_prompt=_build_user_prompt(metadata, base_prompt=configured_user_prompt),
-        system_prompt=configured_system_prompt,
+        user_prompt=build_user_prompt(
+            metadata=metadata,
+            template=configured_user_prompt,
+            load_json_document=_load_json_document_from_s3,
+            execution_repository=app.state.execution_repository,
+        ),
+        system_prompt=build_system_prompt(
+            metadata=metadata,
+            template=configured_system_prompt,
+            load_json_document=_load_json_document_from_s3,
+            execution_repository=app.state.execution_repository,
+        ),
     )
 
 
@@ -283,7 +281,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"{CONFIG_S3_BUCKET_ENV_VAR} is not set")
 
     key = os.getenv(CONFIG_S3_KEY_ENV_VAR, DEFAULT_CONFIG_S3_KEY)
-    app.state.run_config_document = _load_run_config_document_from_s3(bucket, key)
+    app.state.run_config_document = _load_json_document_from_s3(bucket, key)
     app.state.run_config = RunConfig.from_json_text(json.dumps(app.state.run_config_document))
     app.state.notification_service = _build_notification_service()
     app.state.video_s3_bucket = os.getenv(VIDEO_S3_BUCKET_ENV_VAR, bucket)

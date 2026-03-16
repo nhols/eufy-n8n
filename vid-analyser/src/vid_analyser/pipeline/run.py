@@ -2,7 +2,6 @@ import logging
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
-
 from vid_analyser.llm.base import LLMProvider, LlmVideoRequest
 from vid_analyser.llm.gemini import GeminiProvider
 from vid_analyser.llm.response_model import AnalyseResponse
@@ -33,6 +32,7 @@ class _RunConfigInput(BaseModel):
     system_prompt: str | None = None
     user_prompt: str | None = None
     telegram_chat_id: str | None = None
+    previous_messages_limit: int = 10
 
     def to_run_config(self) -> "RunConfig":
         if self.provider.kind != "gemini":
@@ -46,6 +46,7 @@ class _RunConfigInput(BaseModel):
             system_prompt=self.system_prompt,
             user_prompt=self.user_prompt,
             telegram_chat_id=self.telegram_chat_id,
+            previous_messages_limit=self.previous_messages_limit,
         )
 
 
@@ -58,6 +59,7 @@ class RunConfig(BaseModel):
     system_prompt: str | None = None
     user_prompt: str | None = None
     telegram_chat_id: str | None = None
+    previous_messages_limit: int = 10
 
     @classmethod
     def from_json_path(cls, path: str | Path) -> "RunConfig":

@@ -4,6 +4,7 @@ bucket_name           = "argusai-home-example"
 config_key            = "config/run_config.json"
 video_prefix          = "videos"
 video_expiration_days = 30
+enable_bookings_read  = false
 
 vpc_id    = "vpc-xxxxxxxx"
 subnet_id = "subnet-xxxxxxxx"

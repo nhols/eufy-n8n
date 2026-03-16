@@ -55,6 +55,22 @@ data "aws_iam_policy_document" "s3" {
 
     resources = [var.bucket_arn]
   }
+
+  dynamic "statement" {
+    for_each = var.enable_bookings_read ? [1] : []
+
+    content {
+      sid = "BookingsRead"
+
+      actions = [
+        "s3:GetObject",
+      ]
+
+      resources = [
+        "arn:aws:s3:::jp-bookings/bookings.json",
+      ]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "s3" {

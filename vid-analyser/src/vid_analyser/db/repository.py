@@ -127,6 +127,39 @@ class ExecutionRepository:
             return None
         return ExecutionRecord(**dict(row))
 
+    def get_recent_notification_messages(self, *, limit: int) -> list[dict[str, str | None]]:
+        if limit <= 0:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_start_time, analysis_result_json
+                FROM executions
+                WHERE analysis_result_json IS NOT NULL
+                  AND notification_status = ?
+                ORDER BY COALESCE(event_start_time, created_at) DESC
+                LIMIT ?
+                """,
+                (NotificationStatus.SENT.value, limit),
+            ).fetchall()
+
+        messages: list[dict[str, str | None]] = []
+        for row in reversed(rows):
+            analysis_result_json = row["analysis_result_json"]
+            if not analysis_result_json:
+                continue
+            analysis_result = json.loads(analysis_result_json)
+            message_for_user = analysis_result.get("message_for_user")
+            if not message_for_user:
+                continue
+            messages.append(
+                {
+                    "start_time": row["event_start_time"],
+                    "message_for_user": message_for_user,
+                }
+            )
+        return messages
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row

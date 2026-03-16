@@ -10,11 +10,12 @@ module "storage" {
 module "iam" {
   source = "../../modules/iam"
 
-  name         = var.name
-  bucket_arn   = module.storage.bucket_arn
-  config_key   = var.config_key
-  video_prefix = module.storage.video_prefix
-  tags         = var.tags
+  name                 = var.name
+  bucket_arn           = module.storage.bucket_arn
+  config_key           = var.config_key
+  video_prefix         = module.storage.video_prefix
+  enable_bookings_read = var.enable_bookings_read
+  tags                 = var.tags
 }
 
 module "instance" {
