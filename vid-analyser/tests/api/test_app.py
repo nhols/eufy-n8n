@@ -7,14 +7,12 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
+from vid_analyser.db import ConfigRepository, init_database
 from vid_analyser.llm.response_model import AnalyseResponse
 from vid_analyser.pipeline import RunConfig
+from vid_analyser.storage.base import VideoReference
 
 api_module = importlib.import_module("vid_analyser.api.app")
-CONFIG_S3_BUCKET_ENV_VAR = api_module.CONFIG_S3_BUCKET_ENV_VAR
-CONFIG_S3_KEY_ENV_VAR = api_module.CONFIG_S3_KEY_ENV_VAR
-VIDEO_S3_BUCKET_ENV_VAR = api_module.VIDEO_S3_BUCKET_ENV_VAR
-VIDEO_S3_PREFIX_ENV_VAR = api_module.VIDEO_S3_PREFIX_ENV_VAR
 SQLITE_PATH_ENV_VAR = api_module.SQLITE_PATH_ENV_VAR
 TELEGRAM_BOT_TOKEN_ENV_VAR = api_module.TELEGRAM_BOT_TOKEN_ENV_VAR
 app = api_module.app
@@ -22,6 +20,29 @@ app = api_module.app
 
 class FakeProvider:
     name = "fake"
+
+
+class FakeStorageProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def store_video(
+        self,
+        *,
+        execution_id: str,
+        filename: str | None,
+        source_path: str | Path,
+        content_type: str | None,
+    ) -> VideoReference:
+        self.calls.append(
+            {
+                "execution_id": execution_id,
+                "filename": filename,
+                "source_path": str(source_path),
+                "content_type": content_type,
+            }
+        )
+        return VideoReference(provider="fake", path=f"videos/{execution_id}/{filename or 'video.mp4'}")
 
 
 def _write_config(tmp_path: Path, *, provider_kind: str = "gemini") -> Path:
@@ -62,6 +83,15 @@ def _config_json(
     return json.dumps(body)
 
 
+def _seed_config(db_path: Path, config_json: str) -> None:
+    init_database(db_path)
+    ConfigRepository(db_path).insert_config_version(
+        config=json.loads(config_json),
+        created_at="2026-03-16T00:00:00Z",
+        source="test",
+    )
+
+
 def test_run_config_from_json_path(tmp_path: Path) -> None:
     config = RunConfig.from_json_path(_write_config(tmp_path))
 
@@ -80,34 +110,87 @@ def test_run_config_from_json_path_rejects_invalid_provider(tmp_path: Path) -> N
 def test_run_config_from_json_text_includes_optional_prompts() -> None:
     config = RunConfig.from_json_text(
         _config_json(
-            system_prompt="system from s3",
-            user_prompt="user from s3",
+            system_prompt="system from sqlite",
+            user_prompt="user from sqlite",
             telegram_chat_id="1234",
             previous_messages_limit=7,
         )
     )
 
-    assert config.system_prompt == "system from s3"
-    assert config.user_prompt == "user from s3"
+    assert config.system_prompt == "system from sqlite"
+    assert config.user_prompt == "user from sqlite"
     assert config.telegram_chat_id == "1234"
     assert config.previous_messages_limit == 7
 
 
-def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(CONFIG_S3_KEY_ENV_VAR, "config/run_config.json")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(VIDEO_S3_PREFIX_ENV_VAR, "videos")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(
-        api_module,
-        "_load_json_document_from_s3",
-        lambda bucket, key: json.loads(
-            _config_json(system_prompt="system from s3", user_prompt="user from s3")
-        ),
-    )
+def test_app_startup_without_seeded_config_returns_404_for_config_and_503_for_analysis(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
+
+    with TestClient(app) as client:
+        config_response = client.get("/config")
+        analyse_response = client.post(
+            "/analyse-video",
+            files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
+        )
+
+    assert config_response.status_code == 404
+    assert config_response.json() == {"detail": "Config not initialized"}
+    assert analyse_response.status_code == 503
+    assert analyse_response.json() == {"detail": "Config not initialized"}
+
+
+def test_put_config_creates_active_config_and_get_config_returns_it(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+
+    config_payload = json.loads(_config_json(user_prompt="user from api"))
+
+    with TestClient(app) as client:
+        put_response = client.put("/config", json={"config": config_payload, "source": "test"})
+        get_response = client.get("/config")
+        config_repo = client.app.state.config_repository
+
+    assert put_response.status_code == 200
+    assert put_response.json()["config"] == config_payload
+    assert get_response.status_code == 200
+    assert get_response.json()["config"] == config_payload
+    latest = config_repo.get_latest_config()
+    assert latest is not None
+    assert latest.source == "test"
+    assert json.loads(latest.config_json) == config_payload
+
+
+def test_put_config_rejects_invalid_config(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+
+    with TestClient(app) as client:
+        response = client.put("/config", json={"config": {"provider": {"kind": "bad"}}})
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("Invalid config:")
+
+
+def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_config(
+        db_path,
+        _config_json(system_prompt="system from sqlite", user_prompt="user from sqlite"),
+    )
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -139,23 +222,23 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
     assert response.status_code == 200
     assert response.json() == response_model.model_dump(mode="json")
     assert captured["user_prompt"] == (
-        "user from s3\n\n"
+        "user from sqlite\n\n"
         "Event metadata:\n"
         "- storage_path: abc\n"
         "- start_time: 2026-03-15T10:00:00Z"
     )
-    assert captured["system_prompt"] == "system from s3"
+    assert captured["system_prompt"] == "system from sqlite"
     assert isinstance(captured["config"], RunConfig)
     assert not Path(captured["video_path"]).exists()
 
 
 def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(api_module, "_load_json_document_from_s3", lambda bucket, key: json.loads(_config_json()))
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json())
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
     captured: dict[str, object] = {}
 
     async def fake_run(video_path: str | Path, user_prompt: str, system_prompt: str, config: RunConfig):
@@ -177,12 +260,12 @@ def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatc
 
 
 def test_analyse_video_rejects_empty_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(api_module, "_load_json_document_from_s3", lambda bucket, key: json.loads(_config_json()))
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json())
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
     mocked_run = AsyncMock()
     monkeypatch.setattr(api_module, "run", mocked_run)
 
@@ -199,12 +282,12 @@ def test_analyse_video_rejects_empty_upload(tmp_path: Path, monkeypatch: MonkeyP
 
 
 def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(api_module, "_load_json_document_from_s3", lambda bucket, key: json.loads(_config_json()))
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json())
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
     response_model = AnalyseResponse(
         ir_mode="unknown",
         parking_spot_status="unknown",
@@ -232,24 +315,24 @@ def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypa
 
 
 def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
+    db_path = tmp_path / "app.db"
+    _seed_config(
+        db_path,
+        _config_json(
+            system_prompt="system from sqlite",
+            user_prompt=(
+                "The clip was recorded at: {{time}}\n\n"
+                "Bookings:\n{{bookings}}\n\n"
+                "Previous assistant notifications:\n{{previous_messages}}"
+            ),
+        ),
+    )
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
 
     def fake_load_json_document_from_s3(bucket: str, key: str) -> dict:
-        if bucket == "test-bucket":
-            return json.loads(
-                _config_json(
-                    system_prompt="system from s3",
-                    user_prompt=(
-                        "The clip was recorded at: {{time}}\n\n"
-                        "Bookings:\n{{bookings}}\n\n"
-                        "Previous assistant notifications:\n{{previous_messages}}"
-                    ),
-                )
-            )
         if bucket == "jp-bookings":
             return {"bookings": ["Adam until 24/03/26"]}
         raise AssertionError(f"Unexpected S3 lookup {bucket}/{key}")
@@ -291,7 +374,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
             event_end_time="2026-03-15T09:00:10Z",
             video_upload_status=api_module.VideoUploadStatus.STORED,
             notification_status=api_module.NotificationStatus.SENT,
-            config_snapshot={},
+            config_version_id="config-1",
         )
         repo.update_execution(
             "older-1",
@@ -314,7 +397,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
             event_end_time="2026-03-15T10:00:10Z",
             video_upload_status=api_module.VideoUploadStatus.STORED,
             notification_status=api_module.NotificationStatus.SENT,
-            config_snapshot={},
+            config_version_id="config-1",
         )
         repo.update_execution(
             "older-2",
@@ -337,7 +420,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
             event_end_time="2026-03-15T10:15:10Z",
             video_upload_status=api_module.VideoUploadStatus.STORED,
             notification_status=api_module.NotificationStatus.NOT_REQUESTED,
-            config_snapshot={},
+            config_version_id="config-1",
         )
         repo.update_execution(
             "older-3",
@@ -352,7 +435,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
         )
 
     assert response.status_code == 200
-    assert captured["system_prompt"] == "system from s3"
+    assert captured["system_prompt"] == "system from sqlite"
     assert "The clip was recorded at: 2026-03-15T10:30:00Z" in str(captured["user_prompt"])
     assert '"Adam until 24/03/26"' in str(captured["user_prompt"])
     assert "First prior notification." in str(captured["user_prompt"])
@@ -361,18 +444,17 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
 
 
 def test_analyse_video_does_not_fetch_optional_context_when_tokens_absent(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json(user_prompt="user from sqlite"))
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
 
     s3_calls: list[tuple[str, str]] = []
 
     def fake_load_json_document_from_s3(bucket: str, key: str) -> dict:
         s3_calls.append((bucket, key))
-        if bucket == "test-bucket":
-            return json.loads(_config_json(user_prompt="user from s3"))
         raise AssertionError(f"Unexpected S3 lookup {bucket}/{key}")
 
     monkeypatch.setattr(api_module, "_load_json_document_from_s3", fake_load_json_document_from_s3)
@@ -399,11 +481,7 @@ def test_analyse_video_does_not_fetch_optional_context_when_tokens_absent(tmp_pa
     monkeypatch.setattr(api_module, "run", fake_run)
 
     with TestClient(app) as client:
-        monkeypatch.setattr(
-            client.app.state.execution_repository,
-            "get_recent_notification_messages",
-            fake_get_recent_notification_messages,
-        )
+        monkeypatch.setattr(client.app.state.execution_repository, "get_recent_notification_messages", fake_get_recent_notification_messages)
         response = client.post(
             "/analyse-video",
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
@@ -411,28 +489,34 @@ def test_analyse_video_does_not_fetch_optional_context_when_tokens_absent(tmp_pa
         )
 
     assert response.status_code == 200
-    assert s3_calls == [("test-bucket", "config/run_config.json")]
+    assert s3_calls == []
     assert previous_messages_called is False
 
 
 def test_analyse_video_sends_telegram_notification_when_enabled(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(VIDEO_S3_PREFIX_ENV_VAR, "videos")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json(telegram_chat_id="1234"))
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setenv(TELEGRAM_BOT_TOKEN_ENV_VAR, "bot-token")
     call_order: list[str] = []
     fake_service = AsyncMock()
+
     async def fake_send_video(**kwargs):
         call_order.append("notify")
+
     fake_service.send_video.side_effect = fake_send_video
-    monkeypatch.setattr(
-        api_module,
-        "_load_json_document_from_s3",
-        lambda bucket, key: json.loads(_config_json(telegram_chat_id="1234")),
-    )
+    fake_storage = FakeStorageProvider()
+    original_store_video = fake_storage.store_video
+
+    def fake_store_video(**kwargs):
+        call_order.append("upload")
+        return original_store_video(**kwargs)
+
+    fake_storage.store_video = fake_store_video  # type: ignore[method-assign]
     monkeypatch.setattr(api_module, "_build_notification_service", lambda: fake_service)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: call_order.append("upload"))
+    monkeypatch.setattr(api_module, "build_storage_provider", lambda: fake_storage)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -464,17 +548,14 @@ def test_analyse_video_sends_telegram_notification_when_enabled(tmp_path: Path, 
 
 
 def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(VIDEO_S3_PREFIX_ENV_VAR, "videos")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(
-        api_module,
-        "_load_json_document_from_s3",
-        lambda bucket, key: json.loads(_config_json(user_prompt="user from s3")),
-    )
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json(user_prompt="user from sqlite"))
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
+    fake_storage = FakeStorageProvider()
+    monkeypatch.setattr(api_module, "build_storage_provider", lambda: fake_storage)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -499,30 +580,28 @@ def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: Mo
         assert response.status_code == 200
         records = client.app.state.execution_repository
 
-    row = records._connect().execute("SELECT status, device_serial_number, station_serial_number, analysis_result_json, config_snapshot_json, notification_status, input_video_s3_bucket, input_video_s3_key, video_upload_status, video_upload_error FROM executions").fetchone()
+    row = records._connect().execute(
+        "SELECT status, device_serial_number, station_serial_number, analysis_result_json, config_version_id, notification_status, video_storage_provider, video_storage_path, video_upload_status, video_upload_error FROM executions"
+    ).fetchone()
     assert row["status"] == "analysed"
     assert row["device_serial_number"] == "device-1"
     assert row["station_serial_number"] == "station-1"
     assert '"parking_spot_status": "occupied"' in row["analysis_result_json"]
-    assert json.loads(row["config_snapshot_json"])["user_prompt"] == "user from s3"
+    assert row["config_version_id"] is not None
     assert row["notification_status"] == "not_requested"
-    assert row["input_video_s3_bucket"] == "test-video-bucket"
-    assert row["input_video_s3_key"].startswith("videos/")
+    assert row["video_storage_provider"] == "fake"
+    assert row["video_storage_path"].startswith("videos/")
     assert row["video_upload_status"] == "stored"
     assert row["video_upload_error"] is None
 
 
 def test_analyse_video_marks_notification_not_configured_when_requested_without_setup(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(
-        api_module,
-        "_load_json_document_from_s3",
-        lambda bucket, key: json.loads(_config_json(telegram_chat_id="1234")),
-    )
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json(telegram_chat_id="1234"))
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: None)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -551,16 +630,18 @@ def test_analyse_video_marks_notification_not_configured_when_requested_without_
 
 
 def test_analyse_video_marks_video_upload_failed_without_overloading_execution_status(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv(CONFIG_S3_BUCKET_ENV_VAR, "test-bucket")
-    monkeypatch.setenv(VIDEO_S3_BUCKET_ENV_VAR, "test-video-bucket")
-    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(tmp_path / "app.db"))
-    monkeypatch.setattr(
-        api_module,
-        "_load_json_document_from_s3",
-        lambda bucket, key: json.loads(_config_json()),
-    )
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json())
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setattr(api_module, "_upload_video_to_s3", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    class FailingStorageProvider:
+        def store_video(self, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(api_module, "build_storage_provider", lambda: FailingStorageProvider())
 
     response_model = AnalyseResponse(
         ir_mode="unknown",

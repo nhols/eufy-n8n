@@ -20,7 +20,7 @@ Current scope:
 - `modules/instance`: EC2 instance, security group, and bootstrap user data
 - `environments/example`: example environment wiring the modules together
 - `scripts/bootstrap.sh.tftpl`: instance bootstrap script used by Terraform
-- `scripts/deploy.sh`: local deploy helper to sync the repo, copy `.env`, upload config, and start Compose
+- `scripts/deploy.sh`: local deploy helper to sync the repo, copy `.env`, and start Compose
 
 ## Typical flow
 
@@ -29,5 +29,4 @@ Current scope:
 3. Use `infra/scripts/deploy.sh` to:
    - sync the repo to the instance
    - copy the `.env`
-   - upload the analyser config JSON to S3
    - run `docker compose up -d --build`

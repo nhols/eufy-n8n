@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from vid_analyser.db import ExecutionRepository, ExecutionStatus, NotificationStatus, VideoUploadStatus, init_database
+from vid_analyser.db import ConfigRepository, ExecutionRepository, ExecutionStatus, NotificationStatus, VideoUploadStatus, init_database
 
 
 def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
@@ -25,7 +25,7 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
         event_end_time="2026-03-15T12:00:00Z",
         video_upload_status=VideoUploadStatus.NOT_ATTEMPTED,
         notification_status=NotificationStatus.NOT_REQUESTED,
-        config_snapshot={"config_s3_key": "config/run_config.json"},
+        config_version_id="config-1",
     )
 
     repo.update_execution(
@@ -35,6 +35,8 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
         analysis_result_json={"send_notification": True},
         notification_status=NotificationStatus.PENDING,
         video_upload_status=VideoUploadStatus.STORED,
+        video_storage_provider="local",
+        video_storage_path="videos/exec-1/clip.mp4",
     )
 
     record = repo.get_execution("exec-1")
@@ -43,8 +45,10 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
     assert record.status == "analysed"
     assert record.notification_status == "pending"
     assert record.video_upload_status == "stored"
+    assert record.video_storage_provider == "local"
+    assert record.video_storage_path == "videos/exec-1/clip.mp4"
+    assert record.config_version_id == "config-1"
     assert json.loads(record.event_metadata_json) == {"storage_path": "abc"}
-    assert json.loads(record.config_snapshot_json or "{}") == {"config_s3_key": "config/run_config.json"}
     assert json.loads(record.analysis_result_json or "{}") == {"send_notification": True}
 
 
@@ -74,7 +78,7 @@ def test_execution_repository_recent_notification_messages_only_returns_sent(tmp
             event_end_time=start_time,
             video_upload_status=VideoUploadStatus.STORED,
             notification_status=notification_status,
-            config_snapshot={},
+            config_version_id="config-1",
         )
         repo.update_execution(
             execution_id,
@@ -88,3 +92,27 @@ def test_execution_repository_recent_notification_messages_only_returns_sent(tmp
         {"start_time": "2026-03-15T10:00:00Z", "message_for_user": "First sent"},
         {"start_time": "2026-03-15T10:10:00Z", "message_for_user": "Second sent"},
     ]
+
+
+def test_config_repository_inserts_and_returns_latest_config(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    init_database(db_path)
+    repo = ConfigRepository(db_path)
+
+    repo.insert_config_version(
+        config={"provider": {"kind": "gemini", "model": "old"}},
+        created_at="2026-03-15T09:00:00Z",
+        source="test",
+    )
+    repo.insert_config_version(
+        config={"provider": {"kind": "gemini", "model": "new"}},
+        created_at="2026-03-15T10:00:00Z",
+        source="test",
+    )
+
+    latest = repo.get_latest_config()
+
+    assert latest is not None
+    assert latest.source == "test"
+    assert json.loads(latest.config_json) == {"provider": {"kind": "gemini", "model": "new"}}
+    assert repo.get_config(latest.id) is not None

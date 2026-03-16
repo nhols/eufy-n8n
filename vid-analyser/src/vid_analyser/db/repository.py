@@ -3,6 +3,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from vid_analyser.db.types import ExecutionStatus, NotificationStatus, VideoUploadStatus
 
@@ -15,8 +16,8 @@ class ExecutionRecord:
     status: str
     error_message: str | None
     source: str
-    input_video_s3_bucket: str | None
-    input_video_s3_key: str | None
+    video_storage_provider: str | None
+    video_storage_path: str | None
     input_video_filename: str | None
     input_video_content_type: str | None
     input_video_size_bytes: int | None
@@ -32,9 +33,17 @@ class ExecutionRecord:
     station_serial_number: str | None
     event_start_time: str | None
     event_end_time: str | None
+    config_version_id: str | None
     event_metadata_json: str
-    config_snapshot_json: str | None
     analysis_result_json: str | None
+
+
+@dataclass(slots=True)
+class ConfigVersionRecord:
+    id: str
+    created_at: str
+    source: str | None
+    config_json: str
 
 
 class ExecutionRepository:
@@ -62,20 +71,20 @@ class ExecutionRepository:
         notification_status: NotificationStatus | None = None,
         notification_channel: str | None = None,
         notification_target: str | None = None,
-        config_snapshot: dict[str, Any] | None = None,
+        config_version_id: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO executions (
                     id, created_at, updated_at, status, error_message, source,
-                    input_video_s3_bucket, input_video_s3_key, input_video_filename,
+                    video_storage_provider, video_storage_path, input_video_filename,
                     input_video_content_type, input_video_size_bytes, video_upload_status, video_upload_error,
                     notification_status, notification_channel, notification_target,
                     notification_sent_at, notification_error,
                     event_type, device_serial_number, station_serial_number,
-                    event_start_time, event_end_time,
-                    event_metadata_json, config_snapshot_json, analysis_result_json
+                    event_start_time, event_end_time, config_version_id,
+                    event_metadata_json, analysis_result_json
                 ) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
@@ -96,8 +105,8 @@ class ExecutionRepository:
                     station_serial_number,
                     event_start_time,
                     event_end_time,
+                    config_version_id,
                     _to_json(event_metadata),
-                    _to_json(config_snapshot),
                 ),
             )
 
@@ -159,6 +168,67 @@ class ExecutionRepository:
                 }
             )
         return messages
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+
+class ConfigRepository:
+    def __init__(self, db_path: str | Path) -> None:
+        self._db_path = str(db_path)
+
+    def get_latest_config(self) -> ConfigVersionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, created_at, source, config_json
+                FROM config_versions
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return ConfigVersionRecord(**dict(row))
+
+    def get_config(self, config_version_id: str) -> ConfigVersionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, created_at, source, config_json
+                FROM config_versions
+                WHERE id = ?
+                """,
+                (config_version_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ConfigVersionRecord(**dict(row))
+
+    def insert_config_version(
+        self,
+        *,
+        config: dict[str, Any],
+        created_at: str,
+        source: str | None = None,
+    ) -> ConfigVersionRecord:
+        record = ConfigVersionRecord(
+            id=str(uuid4()),
+            created_at=created_at,
+            source=source,
+            config_json=_to_json(config) or "{}",
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO config_versions (id, created_at, source, config_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (record.id, record.created_at, record.source, record.config_json),
+            )
+        return record
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)

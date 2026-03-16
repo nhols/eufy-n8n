@@ -13,22 +13,17 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from vid_analyser.db import ExecutionRepository, ExecutionStatus, NotificationStatus, VideoUploadStatus, init_database
+from vid_analyser.db import ConfigRepository, ExecutionRepository, ExecutionStatus, NotificationStatus, VideoUploadStatus, init_database
 from vid_analyser.notifications import NotificationService, TelegramNotificationService
 from vid_analyser.pipeline import RunConfig, run
 from vid_analyser.llm.response_model import AnalyseResponse
 from vid_analyser.prompting import build_system_prompt, build_user_prompt
+from vid_analyser.storage import build_storage_provider
 
 logger = logging.getLogger(__name__)
 
-CONFIG_S3_BUCKET_ENV_VAR = "VID_ANALYSER_CONFIG_S3_BUCKET"
-CONFIG_S3_KEY_ENV_VAR = "VID_ANALYSER_CONFIG_S3_KEY"
-VIDEO_S3_BUCKET_ENV_VAR = "VID_ANALYSER_VIDEO_S3_BUCKET"
-VIDEO_S3_PREFIX_ENV_VAR = "VID_ANALYSER_VIDEO_S3_PREFIX"
 SQLITE_PATH_ENV_VAR = "VID_ANALYSER_SQLITE_PATH"
 TELEGRAM_BOT_TOKEN_ENV_VAR = "TELEGRAM_BOT_TOKEN"
-DEFAULT_CONFIG_S3_KEY = "config/run_config.json"
-DEFAULT_VIDEO_S3_PREFIX = "videos"
 DEFAULT_SQLITE_PATH = "/app/data/vid_analyser.db"
 DEFAULT_USER_PROMPT = "Analyse this doorbell video and return the required JSON response."
 DEFAULT_SYSTEM_PROMPT = (
@@ -47,11 +42,15 @@ class AnalyseVideoMetadata(BaseModel):
     end_time: str | None = None
 
 
+class ConfigUpdateRequest(BaseModel):
+    config: dict
+    source: str | None = "api"
+
+
 @dataclass(slots=True)
 class ExecutionContext:
     execution_id: str
     now: str
-    video_s3_key: str
     notifications_configured: bool
     user_prompt: str
     system_prompt: str
@@ -75,23 +74,6 @@ def _build_notification_service() -> NotificationService | None:
     return TelegramNotificationService(token=token)
 
 
-def _build_video_s3_key(*, execution_id: str, filename: str | None) -> str:
-    safe_filename = filename or "video.mp4"
-    prefix = os.getenv(VIDEO_S3_PREFIX_ENV_VAR, DEFAULT_VIDEO_S3_PREFIX).strip("/")
-    return f"{prefix}/{execution_id}/{safe_filename}"
-
-
-def _upload_video_to_s3(*, video_path: str | Path, bucket: str, key: str, content_type: str | None) -> None:
-    import boto3
-
-    extra_args = {"ContentType": content_type} if content_type else None
-    s3 = boto3.client("s3")
-    if extra_args:
-        s3.upload_file(str(video_path), bucket, key, ExtraArgs=extra_args)
-    else:
-        s3.upload_file(str(video_path), bucket, key)
-
-
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -109,6 +91,8 @@ def configure_logging() -> None:
 
 
 def _build_execution_context(app: FastAPI, *, video: UploadFile, metadata: AnalyseVideoMetadata) -> ExecutionContext:
+    if app.state.run_config is None:
+        raise RuntimeError("Run config is not initialized")
     now = _utc_now()
     execution_id = str(uuid4())
     configured_user_prompt = app.state.run_config.user_prompt or DEFAULT_USER_PROMPT
@@ -119,7 +103,6 @@ def _build_execution_context(app: FastAPI, *, video: UploadFile, metadata: Analy
     return ExecutionContext(
         execution_id=execution_id,
         now=now,
-        video_s3_key=_build_video_s3_key(execution_id=execution_id, filename=video.filename),
         notifications_configured=notifications_configured,
         user_prompt=build_user_prompt(
             metadata=metadata,
@@ -162,7 +145,7 @@ def _create_execution_record(
         notification_status=NotificationStatus.PENDING if context.notifications_configured else NotificationStatus.NOT_CONFIGURED,
         notification_channel="telegram" if app.state.run_config.telegram_chat_id else None,
         notification_target=app.state.run_config.telegram_chat_id,
-        config_snapshot=app.state.run_config_document,
+        config_version_id=app.state.run_config_version_id,
     )
 
 
@@ -240,7 +223,7 @@ async def _send_notification_if_needed(
         )
 
 
-def _store_video_in_s3(
+def _store_video(
     app: FastAPI,
     *,
     context: ExecutionContext,
@@ -248,21 +231,25 @@ def _store_video_in_s3(
     video: UploadFile,
 ) -> None:
     try:
-        _upload_video_to_s3(
-            video_path=temp_path,
-            bucket=app.state.video_s3_bucket,
-            key=context.video_s3_key,
+        video_reference = app.state.storage_provider.store_video(
+            execution_id=context.execution_id,
+            filename=video.filename,
+            source_path=temp_path,
             content_type=video.content_type,
         )
         app.state.execution_repository.update_execution(
             context.execution_id,
             updated_at=_utc_now(),
-            input_video_s3_bucket=app.state.video_s3_bucket,
-            input_video_s3_key=context.video_s3_key,
+            video_storage_provider=video_reference.provider,
+            video_storage_path=video_reference.path,
             video_upload_status=VideoUploadStatus.STORED,
             video_upload_error=None,
         )
-        logger.info("Uploaded video to s3://%s/%s", app.state.video_s3_bucket, context.video_s3_key)
+        logger.info(
+            "Stored video using provider=%s path=%s",
+            video_reference.provider,
+            video_reference.path,
+        )
     except Exception:
         app.state.execution_repository.update_execution(
             context.execution_id,
@@ -270,29 +257,80 @@ def _store_video_in_s3(
             video_upload_status=VideoUploadStatus.FAILED,
             video_upload_error="Video upload failed",
         )
-        logger.exception("Failed to upload video to S3 for execution_id=%s", context.execution_id)
+        logger.exception("Failed to store video for execution_id=%s", context.execution_id)
+
+
+def _load_run_config_document(app: FastAPI) -> dict:
+    latest_config = app.state.config_repository.get_latest_config()
+    if latest_config is None:
+        raise RuntimeError("No config found in SQLite.")
+    return json.loads(latest_config.config_json)
+
+
+def _set_active_config(app: FastAPI, record) -> None:
+    app.state.run_config_version_id = record.id
+    app.state.run_config_document = json.loads(record.config_json)
+    app.state.run_config = RunConfig.from_json_text(record.config_json)
+
+
+def _load_active_config(app: FastAPI) -> None:
+    latest_config = app.state.config_repository.get_latest_config()
+    if latest_config is None:
+        app.state.run_config_version_id = None
+        app.state.run_config_document = None
+        app.state.run_config = None
+        logger.warning("No config found in SQLite config_versions table")
+        return
+    _set_active_config(app, latest_config)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    bucket = os.getenv(CONFIG_S3_BUCKET_ENV_VAR)
-    if not bucket:
-        raise RuntimeError(f"{CONFIG_S3_BUCKET_ENV_VAR} is not set")
-
-    key = os.getenv(CONFIG_S3_KEY_ENV_VAR, DEFAULT_CONFIG_S3_KEY)
-    app.state.run_config_document = _load_json_document_from_s3(bucket, key)
-    app.state.run_config = RunConfig.from_json_text(json.dumps(app.state.run_config_document))
-    app.state.notification_service = _build_notification_service()
-    app.state.video_s3_bucket = os.getenv(VIDEO_S3_BUCKET_ENV_VAR, bucket)
     db_path = os.getenv(SQLITE_PATH_ENV_VAR, DEFAULT_SQLITE_PATH)
     init_database(db_path)
     app.state.execution_repository = ExecutionRepository(db_path)
-    logger.info("Loaded run config from s3://%s/%s", bucket, key)
+    app.state.config_repository = ConfigRepository(db_path)
+    _load_active_config(app)
+    app.state.storage_provider = build_storage_provider()
+    app.state.notification_service = _build_notification_service()
+    if app.state.run_config is not None:
+        logger.info("Loaded run config from SQLite config_versions table")
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/config")
+async def get_config():
+    if app.state.run_config_document is None or app.state.run_config_version_id is None:
+        raise HTTPException(status_code=404, detail="Config not initialized")
+    return {
+        "id": app.state.run_config_version_id,
+        "config": app.state.run_config_document,
+    }
+
+
+@app.put("/config")
+async def update_config(payload: ConfigUpdateRequest):
+    try:
+        validated_config = RunConfig.from_json_text(json.dumps(payload.config))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {exc}") from None
+
+    record = app.state.config_repository.insert_config_version(
+        config=payload.config,
+        created_at=_utc_now(),
+        source=payload.source,
+    )
+    app.state.run_config = validated_config
+    app.state.run_config_document = payload.config
+    app.state.run_config_version_id = record.id
+    return {
+        "id": record.id,
+        "config": payload.config,
+    }
 
 
 @app.post("/analyse-video")
@@ -307,6 +345,8 @@ async def analyse_video(
     end_time: Annotated[str | None, Form()] = None,
 ):
     logger.info("Received analyse-video request from %s", request.client.host if request.client else "unknown")
+    if app.state.run_config is None:
+        raise HTTPException(status_code=503, detail="Config not initialized")
     metadata = AnalyseVideoMetadata(
         received_at=received_at,
         station_serial_number=station_serial_number,
@@ -356,7 +396,7 @@ async def analyse_video(
         )
         _update_post_analysis_state(app, context=context, response=response)
         await _send_notification_if_needed(app, context=context, response=response, temp_path=temp_path, video=video)
-        _store_video_in_s3(app, context=context, temp_path=temp_path, video=video)
+        _store_video(app, context=context, temp_path=temp_path, video=video)
 
         duration_ms = (time.perf_counter() - start) * 1000
         logger.info(
