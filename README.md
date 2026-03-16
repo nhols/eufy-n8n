@@ -213,3 +213,9 @@ This project runs from source via `docker compose build`. To deploy or update:
 | Bridge code | `bridge/` | Git tags on this repo |
 | eufy-security-ws | `eufy-ws/Dockerfile` | Pinned to `develop` branch; rebuild with `--no-cache` to update |
 | vid-analyser-api | `docker-compose.yml` | Built from `vid-analyser/Dockerfile.api` |
+
+## TODO
+
+- Add Telegram webhook support for inbound bot updates.
+- If Telegram webhooks are added, expose a public HTTPS endpoint for FastAPI and point Telegram at a real domain-backed webhook URL.
+- Add scheduled task support using APScheduler with schedules and run history stored in SQLite.
