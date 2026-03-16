@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
+from vid_analyser.auth import require_ui_basic_auth, require_vid_analyser_api_key
 from vid_analyser.config_state import apply_config_update
 from vid_analyser.db import ConfigRepository, ExecutionRepository, ExecutionStatus, NotificationStatus, VideoUploadStatus, init_database
 from vid_analyser.notifications import NotificationService, TelegramNotificationService
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 SQLITE_PATH_ENV_VAR = "VID_ANALYSER_SQLITE_PATH"
 TELEGRAM_BOT_TOKEN_ENV_VAR = "TELEGRAM_BOT_TOKEN"
+ENABLE_API_DOCS_ENV_VAR = "ENABLE_API_DOCS"
 DEFAULT_SQLITE_PATH = "/app/data/vid_analyser.db"
 DEFAULT_USER_PROMPT = "Analyse this doorbell video and return the required JSON response."
 DEFAULT_SYSTEM_PROMPT = (
@@ -90,6 +92,11 @@ def configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stdout,
     )
+
+
+def _is_api_docs_enabled() -> bool:
+    raw = os.getenv(ENABLE_API_DOCS_ENV_VAR, "true").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _build_execution_context(app: FastAPI, *, video: UploadFile, metadata: AnalyseVideoMetadata) -> ExecutionContext:
@@ -301,11 +308,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/docs" if _is_api_docs_enabled() else None,
+    redoc_url="/redoc" if _is_api_docs_enabled() else None,
+    openapi_url="/openapi.json" if _is_api_docs_enabled() else None,
+)
 app.include_router(ui_router)
 
 
-@app.get("/config")
+@app.get("/config", dependencies=[Depends(require_ui_basic_auth)])
 async def get_config():
     if app.state.run_config_document is None or app.state.run_config_version_id is None:
         raise HTTPException(status_code=404, detail="Config not initialized")
@@ -315,7 +327,7 @@ async def get_config():
     }
 
 
-@app.put("/config")
+@app.put("/config", dependencies=[Depends(require_ui_basic_auth)])
 async def update_config(payload: ConfigUpdateRequest):
     try:
         return apply_config_update(
@@ -328,7 +340,7 @@ async def update_config(payload: ConfigUpdateRequest):
         raise HTTPException(status_code=400, detail=f"Invalid config: {exc}") from None
 
 
-@app.post("/analyse-video")
+@app.post("/analyse-video", dependencies=[Depends(require_vid_analyser_api_key)])
 async def analyse_video(
     request: Request,
     video: Annotated[UploadFile, File(...)],

@@ -81,10 +81,12 @@ DOORBELL_SN=T8213PXXXXXXXXXX
 HOMEBASE_SN=T8030TXXXXXXXXXX
 
 VID_ANALYSER_API_URL=http://vid-analyser-api:8000/analyse-video
+VID_ANALYSER_API_KEY=change-me
 GEMINI_API_KEY=change-me
 VID_ANALYSER_STORAGE_PROVIDER=local
 VID_ANALYSER_STORAGE_ROOT=/app/data/storage
 VID_ANALYSER_SQLITE_PATH=/app/data/vid_analyser.db
+ENABLE_API_DOCS=false
 TELEGRAM_BOT_TOKEN=change-me
 UI_BASIC_AUTH_USER=admin
 UI_BASIC_AUTH_PASSWORD=change-me
@@ -95,10 +97,11 @@ AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=eu-west-2
 ```
 
-The analyser starts even if no config exists yet. Configure it by calling `PUT /config` after startup:
+The analyser starts even if no config exists yet. Configure it by calling `PUT /config` after startup. `/config` is protected with the same HTTP basic auth credentials as the UI:
 
 ```sh
 curl -X PUT http://localhost:8000/config \
+  -u admin:change-me \
   -H 'Content-Type: application/json' \
   --data-binary @<(jq -n --argfile cfg vid-analyser/config/run_config_v3.json '{config: $cfg, source: "manual"}')
 ```
@@ -107,13 +110,20 @@ If the active prompt template includes `{{bookings}}`, the API will load `s3://j
 
 ### Admin UI
 
-The API also exposes a minimal admin UI:
+The API also exposes a minimal admin UI directly from FastAPI on port `8000`:
 
 - `/ui/executions`
 - `/ui/executions/<execution-id>`
 - `/ui/config`
 
 These routes are protected with HTTP basic auth using `UI_BASIC_AUTH_USER` and `UI_BASIC_AUTH_PASSWORD`.
+
+Machine-to-machine clip ingestion is separate:
+
+- `eufy-bridge` sends `X-API-Key: <VID_ANALYSER_API_KEY>`
+- `POST /analyse-video` requires that API key
+
+For production/public deployment, set `ENABLE_API_DOCS=false` to disable `/docs`, `/redoc`, and `/openapi.json`. For local development you can set it to `true`.
 
 ### Run
 

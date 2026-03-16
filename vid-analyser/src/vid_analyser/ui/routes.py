@@ -1,41 +1,17 @@
 import json
-import os
-import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
+from vid_analyser.auth import require_ui_basic_auth
 from vid_analyser.config_state import apply_config_update
 from vid_analyser.storage.local import LocalStorageProvider
 
-UI_BASIC_AUTH_USER_ENV_VAR = "UI_BASIC_AUTH_USER"
-UI_BASIC_AUTH_PASSWORD_ENV_VAR = "UI_BASIC_AUTH_PASSWORD"
-
 router = APIRouter(prefix="/ui", tags=["ui"])
-_security = HTTPBasic()
 _templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
-
-
-def _require_ui_auth(credentials: HTTPBasicCredentials = Depends(_security)) -> None:
-    expected_user = os.getenv(UI_BASIC_AUTH_USER_ENV_VAR)
-    expected_password = os.getenv(UI_BASIC_AUTH_PASSWORD_ENV_VAR)
-    if not expected_user or not expected_password:
-        raise HTTPException(status_code=503, detail="UI auth is not configured")
-
-    valid_user = secrets.compare_digest(credentials.username, expected_user)
-    valid_password = secrets.compare_digest(credentials.password, expected_password)
-    if valid_user and valid_password:
-        return
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid UI credentials",
-        headers={"WWW-Authenticate": "Basic"},
-    )
 
 
 @router.get("")
@@ -43,7 +19,7 @@ def ui_root() -> RedirectResponse:
     return RedirectResponse(url="/ui/executions", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/executions", dependencies=[Depends(_require_ui_auth)])
+@router.get("/executions", dependencies=[Depends(require_ui_basic_auth)])
 def executions_page(request: Request):
     executions = request.app.state.execution_repository.list_executions(limit=100)
     execution_rows = []
@@ -68,7 +44,7 @@ def executions_page(request: Request):
     )
 
 
-@router.get("/executions/{execution_id}", dependencies=[Depends(_require_ui_auth)])
+@router.get("/executions/{execution_id}", dependencies=[Depends(require_ui_basic_auth)])
 def execution_detail_page(request: Request, execution_id: str):
     execution = request.app.state.execution_repository.get_execution(execution_id)
     if execution is None:
@@ -101,7 +77,7 @@ def execution_detail_page(request: Request, execution_id: str):
     )
 
 
-@router.get("/executions/{execution_id}/video", dependencies=[Depends(_require_ui_auth)])
+@router.get("/executions/{execution_id}/video", dependencies=[Depends(require_ui_basic_auth)])
 def execution_video(request: Request, execution_id: str):
     execution = request.app.state.execution_repository.get_execution(execution_id)
     if execution is None:
@@ -120,7 +96,7 @@ def execution_video(request: Request, execution_id: str):
     return FileResponse(video_path, media_type=execution.input_video_content_type or "video/mp4")
 
 
-@router.get("/config", dependencies=[Depends(_require_ui_auth)])
+@router.get("/config", dependencies=[Depends(require_ui_basic_auth)])
 def config_page(request: Request, saved: int = 0):
     config_record = request.app.state.config_repository.get_latest_config()
     config_json_pretty = (
@@ -141,7 +117,7 @@ def config_page(request: Request, saved: int = 0):
     )
 
 
-@router.post("/config", dependencies=[Depends(_require_ui_auth)])
+@router.post("/config", dependencies=[Depends(require_ui_basic_auth)])
 async def update_config_page(request: Request, config_json: str = Form(...)):
     try:
         config = json.loads(config_json)

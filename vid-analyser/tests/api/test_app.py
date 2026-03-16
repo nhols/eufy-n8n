@@ -16,6 +16,7 @@ from vid_analyser.storage.base import VideoReference
 api_module = importlib.import_module("vid_analyser.api.app")
 SQLITE_PATH_ENV_VAR = api_module.SQLITE_PATH_ENV_VAR
 TELEGRAM_BOT_TOKEN_ENV_VAR = api_module.TELEGRAM_BOT_TOKEN_ENV_VAR
+ENABLE_API_DOCS_ENV_VAR = api_module.ENABLE_API_DOCS_ENV_VAR
 app = api_module.app
 
 
@@ -98,6 +99,16 @@ def _basic_auth_headers(username: str, password: str) -> dict[str, str]:
     return {"Authorization": f"Basic {token}"}
 
 
+def _api_key_headers(api_key: str = "test-api-key") -> dict[str, str]:
+    return {"X-API-Key": api_key}
+
+
+def _configure_auth_env(monkeypatch: MonkeyPatch, *, api_key: str = "test-api-key") -> None:
+    monkeypatch.setenv("UI_BASIC_AUTH_USER", "admin")
+    monkeypatch.setenv("UI_BASIC_AUTH_PASSWORD", "secret")
+    monkeypatch.setenv("VID_ANALYSER_API_KEY", api_key)
+
+
 def test_run_config_from_json_path(tmp_path: Path) -> None:
     config = RunConfig.from_json_path(_write_config(tmp_path))
 
@@ -129,17 +140,28 @@ def test_run_config_from_json_text_includes_optional_prompts() -> None:
     assert config.previous_messages_limit == 7
 
 
+def test_api_docs_toggle_parser(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv(ENABLE_API_DOCS_ENV_VAR, "false")
+    assert api_module._is_api_docs_enabled() is False
+
+    monkeypatch.setenv(ENABLE_API_DOCS_ENV_VAR, "true")
+    assert api_module._is_api_docs_enabled() is True
+
+
 def test_app_startup_without_seeded_config_returns_404_for_config_and_503_for_analysis(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     db_path = tmp_path / "app.db"
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
+    _configure_auth_env(monkeypatch)
 
     with TestClient(app) as client:
-        config_response = client.get("/config")
+        config_response = client.get("/config", headers=_basic_auth_headers("admin", "secret"))
         analyse_response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
         )
 
@@ -155,12 +177,14 @@ def test_put_config_creates_active_config_and_get_config_returns_it(tmp_path: Pa
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     config_payload = json.loads(_config_json(user_prompt="user from api"))
 
     with TestClient(app) as client:
-        put_response = client.put("/config", json={"config": config_payload, "source": "test"})
-        get_response = client.get("/config")
+        headers = _basic_auth_headers("admin", "secret")
+        put_response = client.put("/config", headers=headers, json={"config": config_payload, "source": "test"})
+        get_response = client.get("/config", headers=headers)
         config_repo = client.app.state.config_repository
 
     assert put_response.status_code == 200
@@ -179,12 +203,48 @@ def test_put_config_rejects_invalid_config(tmp_path: Path, monkeypatch: MonkeyPa
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     with TestClient(app) as client:
-        response = client.put("/config", json={"config": {"provider": {"kind": "bad"}}})
+        response = client.put(
+            "/config",
+            headers=_basic_auth_headers("admin", "secret"),
+            json={"config": {"provider": {"kind": "bad"}}},
+        )
 
     assert response.status_code == 400
     assert response.json()["detail"].startswith("Invalid config:")
+
+
+def test_config_requires_basic_auth(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json())
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
+    _configure_auth_env(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/config")
+
+    assert response.status_code == 401
+
+
+def test_analyse_video_requires_api_key(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_config(db_path, _config_json())
+    monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
+    monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
+    _configure_auth_env(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyse-video",
+            files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
+        )
+
+    assert response.status_code == 401
 
 
 def test_ui_requires_basic_auth(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -193,8 +253,7 @@ def test_ui_requires_basic_auth(tmp_path: Path, monkeypatch: MonkeyPatch) -> Non
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setenv("UI_BASIC_AUTH_USER", "admin")
-    monkeypatch.setenv("UI_BASIC_AUTH_PASSWORD", "secret")
+    _configure_auth_env(monkeypatch)
 
     with TestClient(app) as client:
         response = client.get("/ui/executions")
@@ -212,8 +271,7 @@ def test_ui_execution_pages_and_video(tmp_path: Path, monkeypatch: MonkeyPatch) 
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(storage_root))
-    monkeypatch.setenv("UI_BASIC_AUTH_USER", "admin")
-    monkeypatch.setenv("UI_BASIC_AUTH_PASSWORD", "secret")
+    _configure_auth_env(monkeypatch)
 
     with TestClient(app) as client:
         config_record = client.app.state.config_repository.get_latest_config()
@@ -263,8 +321,7 @@ def test_ui_config_page_can_update_config(tmp_path: Path, monkeypatch: MonkeyPat
     monkeypatch.setenv(SQLITE_PATH_ENV_VAR, str(db_path))
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setenv("UI_BASIC_AUTH_USER", "admin")
-    monkeypatch.setenv("UI_BASIC_AUTH_PASSWORD", "secret")
+    _configure_auth_env(monkeypatch)
 
     new_config = json.dumps(
         {
@@ -301,6 +358,7 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -325,6 +383,7 @@ def test_analyse_video_calls_run_and_cleans_up(tmp_path: Path, monkeypatch: Monk
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
             data={"storage_path": "abc", "start_time": "2026-03-15T10:00:00Z"},
         )
@@ -349,6 +408,7 @@ def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatc
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
     captured: dict[str, object] = {}
 
     async def fake_run(video_path: str | Path, user_prompt: str, system_prompt: str, config: RunConfig):
@@ -360,6 +420,7 @@ def test_analyse_video_cleans_up_temp_file_on_failure(tmp_path: Path, monkeypatc
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
             data={"station_serial_number": "homebase-1"},
         )
@@ -376,12 +437,14 @@ def test_analyse_video_rejects_empty_upload(tmp_path: Path, monkeypatch: MonkeyP
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
     mocked_run = AsyncMock()
     monkeypatch.setattr(api_module, "run", mocked_run)
 
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"", "video/mp4")},
             data={"station_serial_number": "homebase-1"},
         )
@@ -398,6 +461,7 @@ def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypa
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
     response_model = AnalyseResponse(
         ir_mode="unknown",
         parking_spot_status="unknown",
@@ -417,6 +481,7 @@ def test_analyse_video_accepts_request_without_metadata(tmp_path: Path, monkeypa
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
         )
 
@@ -441,6 +506,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     def fake_load_json_document_from_s3(bucket: str, key: str) -> dict:
         if bucket == "jp-bookings":
@@ -541,6 +607,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
 
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
             data={"start_time": "2026-03-15T10:30:00Z"},
         )
@@ -561,6 +628,7 @@ def test_analyse_video_does_not_fetch_optional_context_when_tokens_absent(tmp_pa
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     s3_calls: list[tuple[str, str]] = []
 
@@ -595,6 +663,7 @@ def test_analyse_video_does_not_fetch_optional_context_when_tokens_absent(tmp_pa
         monkeypatch.setattr(client.app.state.execution_repository, "get_recent_notification_messages", fake_get_recent_notification_messages)
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
             data={"start_time": "2026-03-15T10:00:00Z"},
         )
@@ -611,6 +680,7 @@ def test_analyse_video_sends_telegram_notification_when_enabled(tmp_path: Path, 
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setenv(TELEGRAM_BOT_TOKEN_ENV_VAR, "bot-token")
+    _configure_auth_env(monkeypatch)
     call_order: list[str] = []
     fake_service = AsyncMock()
 
@@ -646,6 +716,7 @@ def test_analyse_video_sends_telegram_notification_when_enabled(tmp_path: Path, 
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
         )
 
@@ -665,6 +736,7 @@ def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: Mo
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
     fake_storage = FakeStorageProvider()
     monkeypatch.setattr(api_module, "build_storage_provider", lambda: fake_storage)
 
@@ -685,6 +757,7 @@ def test_analyse_video_persists_execution_record(tmp_path: Path, monkeypatch: Mo
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
             data={"device_serial_number": "device-1", "station_serial_number": "station-1"},
         )
@@ -713,6 +786,7 @@ def test_analyse_video_marks_notification_not_configured_when_requested_without_
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     response_model = AnalyseResponse(
         ir_mode="unknown",
@@ -731,6 +805,7 @@ def test_analyse_video_marks_notification_not_configured_when_requested_without_
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
         )
         assert response.status_code == 200
@@ -747,6 +822,7 @@ def test_analyse_video_marks_video_upload_failed_without_overloading_execution_s
     monkeypatch.setenv("VID_ANALYSER_STORAGE_PROVIDER", "local")
     monkeypatch.setenv("VID_ANALYSER_STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.delenv(TELEGRAM_BOT_TOKEN_ENV_VAR, raising=False)
+    _configure_auth_env(monkeypatch)
 
     class FailingStorageProvider:
         def store_video(self, **kwargs):
@@ -771,6 +847,7 @@ def test_analyse_video_marks_video_upload_failed_without_overloading_execution_s
     with TestClient(app) as client:
         response = client.post(
             "/analyse-video",
+            headers=_api_key_headers(),
             files={"video": ("clip.mp4", b"video-bytes", "video/mp4")},
         )
         assert response.status_code == 200
