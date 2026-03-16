@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS executions (
 
     config_version_id TEXT,
     event_metadata_json TEXT NOT NULL,
-    analysis_result_json TEXT
+    analysis_result_json TEXT,
+
+    FOREIGN KEY (config_version_id) REFERENCES config_versions(id)
 );
 
 CREATE TABLE IF NOT EXISTS config_versions (
@@ -60,17 +62,3 @@ def init_database(db_path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(SCHEMA_SQL)
-        _migrate_legacy_schema(conn)
-
-
-def _migrate_legacy_schema(conn: sqlite3.Connection) -> None:
-    columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(executions)")
-    }
-    if "video_storage_provider" not in columns:
-        conn.execute("ALTER TABLE executions ADD COLUMN video_storage_provider TEXT")
-    if "video_storage_path" not in columns:
-        conn.execute("ALTER TABLE executions ADD COLUMN video_storage_path TEXT")
-    if "config_version_id" not in columns:
-        conn.execute("ALTER TABLE executions ADD COLUMN config_version_id TEXT")

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from vid_analyser.db import ConfigRepository, ExecutionRepository, ExecutionStatus, NotificationStatus, VideoUploadStatus, init_database
@@ -7,6 +8,12 @@ from vid_analyser.db import ConfigRepository, ExecutionRepository, ExecutionStat
 def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     init_database(db_path)
+    config_repo = ConfigRepository(db_path)
+    config_record = config_repo.insert_config_version(
+        config={"provider": {"kind": "gemini", "model": "gemini-3-flash-preview"}},
+        created_at="2026-03-15T11:00:00Z",
+        source="test",
+    )
     repo = ExecutionRepository(db_path)
 
     repo.create_execution(
@@ -25,7 +32,7 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
         event_end_time="2026-03-15T12:00:00Z",
         video_upload_status=VideoUploadStatus.NOT_ATTEMPTED,
         notification_status=NotificationStatus.NOT_REQUESTED,
-        config_version_id="config-1",
+        config_version_id=config_record.id,
     )
 
     repo.update_execution(
@@ -47,7 +54,7 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
     assert record.video_upload_status == "stored"
     assert record.video_storage_provider == "local"
     assert record.video_storage_path == "videos/exec-1/clip.mp4"
-    assert record.config_version_id == "config-1"
+    assert record.config_version_id == config_record.id
     assert json.loads(record.event_metadata_json) == {"storage_path": "abc"}
     assert json.loads(record.analysis_result_json or "{}") == {"send_notification": True}
 
@@ -55,6 +62,12 @@ def test_execution_repository_create_update_and_get(tmp_path: Path) -> None:
 def test_execution_repository_recent_notification_messages_only_returns_sent(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     init_database(db_path)
+    config_repo = ConfigRepository(db_path)
+    config_record = config_repo.insert_config_version(
+        config={"provider": {"kind": "gemini", "model": "gemini-3-flash-preview"}},
+        created_at="2026-03-15T09:00:00Z",
+        source="test",
+    )
     repo = ExecutionRepository(db_path)
 
     for execution_id, start_time, notification_status, message in [
@@ -78,8 +91,8 @@ def test_execution_repository_recent_notification_messages_only_returns_sent(tmp
             event_end_time=start_time,
             video_upload_status=VideoUploadStatus.STORED,
             notification_status=notification_status,
-            config_version_id="config-1",
-        )
+                config_version_id=config_record.id,
+            )
         repo.update_execution(
             execution_id,
             updated_at=start_time,
@@ -116,3 +129,33 @@ def test_config_repository_inserts_and_returns_latest_config(tmp_path: Path) -> 
     assert latest.source == "test"
     assert json.loads(latest.config_json) == {"provider": {"kind": "gemini", "model": "new"}}
     assert repo.get_config(latest.id) is not None
+
+
+def test_execution_repository_enforces_config_version_foreign_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    init_database(db_path)
+    repo = ExecutionRepository(db_path)
+
+    try:
+        repo.create_execution(
+            execution_id="exec-1",
+            created_at="2026-03-15T12:00:00Z",
+            updated_at="2026-03-15T12:00:00Z",
+            status=ExecutionStatus.RECEIVED,
+            source="eufy-bridge",
+            event_metadata={},
+            input_video_filename="clip.mp4",
+            input_video_content_type="video/mp4",
+            input_video_size_bytes=123,
+            device_serial_number="device-1",
+            station_serial_number="station-1",
+            event_start_time="2026-03-15T11:59:00Z",
+            event_end_time="2026-03-15T12:00:00Z",
+            video_upload_status=VideoUploadStatus.NOT_ATTEMPTED,
+            notification_status=NotificationStatus.NOT_REQUESTED,
+            config_version_id="missing-config",
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("Expected sqlite3.IntegrityError for missing config_version_id FK")

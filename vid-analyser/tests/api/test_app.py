@@ -358,6 +358,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
 
     with TestClient(app) as client:
         repo = client.app.state.execution_repository
+        config_version_id = client.app.state.run_config_version_id
         repo.create_execution(
             execution_id="older-1",
             created_at="2026-03-15T09:00:00Z",
@@ -374,7 +375,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
             event_end_time="2026-03-15T09:00:10Z",
             video_upload_status=api_module.VideoUploadStatus.STORED,
             notification_status=api_module.NotificationStatus.SENT,
-            config_version_id="config-1",
+            config_version_id=config_version_id,
         )
         repo.update_execution(
             "older-1",
@@ -397,7 +398,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
             event_end_time="2026-03-15T10:00:10Z",
             video_upload_status=api_module.VideoUploadStatus.STORED,
             notification_status=api_module.NotificationStatus.SENT,
-            config_version_id="config-1",
+            config_version_id=config_version_id,
         )
         repo.update_execution(
             "older-2",
@@ -420,7 +421,7 @@ def test_analyse_video_renders_prompt_tokens_lazily(tmp_path: Path, monkeypatch:
             event_end_time="2026-03-15T10:15:10Z",
             video_upload_status=api_module.VideoUploadStatus.STORED,
             notification_status=api_module.NotificationStatus.NOT_REQUESTED,
-            config_version_id="config-1",
+            config_version_id=config_version_id,
         )
         repo.update_execution(
             "older-3",
