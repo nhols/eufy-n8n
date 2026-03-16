@@ -82,14 +82,26 @@ HOMEBASE_SN=T8030TXXXXXXXXXX
 
 VID_ANALYSER_API_URL=http://vid-analyser-api:8000/analyse-video
 GEMINI_API_KEY=change-me
-VID_ANALYSER_STORAGE_PROVIDER=s3
-VID_ANALYSER_STORAGE_ROOT=/app/storage
-VID_ANALYSER_VIDEO_S3_BUCKET=your-video-bucket
+VID_ANALYSER_STORAGE_PROVIDER=local
+VID_ANALYSER_STORAGE_ROOT=/app/data/storage
 VID_ANALYSER_SQLITE_PATH=/app/data/vid_analyser.db
 TELEGRAM_BOT_TOKEN=change-me
+
+# Only needed if your prompt template uses {{bookings}}
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=eu-west-2
 ```
 
-The analyser starts even if no config exists yet. Configure it by calling `PUT /config` after startup.
+The analyser starts even if no config exists yet. Configure it by calling `PUT /config` after startup:
+
+```sh
+curl -X PUT http://localhost:8000/config \
+  -H 'Content-Type: application/json' \
+  --data-binary @<(jq -n --argfile cfg vid-analyser/config/run_config_v3.json '{config: $cfg, source: "manual"}')
+```
+
+If the active prompt template includes `{{bookings}}`, the API will load `s3://jp-bookings/bookings.json` using standard AWS credentials from the environment. In Docker Compose that means setting `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and usually `AWS_DEFAULT_REGION` in `.env`.
 
 ### Run
 
